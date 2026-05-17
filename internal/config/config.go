@@ -146,6 +146,18 @@ type Config struct {
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
 
+	// KiroFingerprint defines a global fingerprint configuration for all Kiro requests.
+	// When set, all Kiro requests use this fixed fingerprint instead of random generation.
+	KiroFingerprint *KiroFingerprintConfig `yaml:"kiro-fingerprint,omitempty" json:"kiro-fingerprint,omitempty"`
+
+	// OAuthEndpointOverrides allows per-provider OAuth endpoint URL overrides.
+	OAuthEndpointOverrides map[string]OAuthEndpointConfig `yaml:"oauth-endpoint-overrides,omitempty" json:"oauth-endpoint-overrides,omitempty"`
+
+	// IncognitoBrowser enables opening OAuth URLs in incognito/private browsing mode.
+	// Useful when logging in with a different account without affecting the current session.
+	// Default: false.
+	IncognitoBrowser bool `yaml:"incognito-browser" json:"incognito-browser"`
+
 	legacyMigrationPending bool `yaml:"-" json:"-"`
 }
 

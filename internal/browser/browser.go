@@ -11,6 +11,21 @@ import (
 	"github.com/skratchdot/open-golang/open"
 )
 
+// SetIncognitoMode enables or disables incognito/private browsing mode for future OpenURL calls.
+// Note: this implementation does not support native incognito mode; the setting is recorded but
+// has no effect since the underlying open-golang library opens the system default browser.
+func SetIncognitoMode(enabled bool) {
+	if enabled {
+		log.Debug("incognito browser mode requested (not supported by this browser backend; ignored)")
+	}
+}
+
+// CloseBrowser closes the last opened browser process if possible.
+// This is a no-op for the open-golang backend which does not track browser PIDs.
+func CloseBrowser() error {
+	return nil
+}
+
 // OpenURL opens the specified URL in the default web browser.
 // It first attempts to use a platform-agnostic library and falls back to
 // platform-specific commands if that fails.

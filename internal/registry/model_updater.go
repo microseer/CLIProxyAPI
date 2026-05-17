@@ -27,12 +27,28 @@ var modelsURLs = []string{
 //go:embed models/models.json
 var embeddedModelsJSON []byte
 
+//go:embed models/plus-models.json
+var embeddedPlusModelsJSON []byte
+
 type modelStore struct {
 	mu   sync.RWMutex
 	data *staticModelsJSON
 }
 
+// plusModelsJSON holds model definitions for providers loaded from plus-models.json.
+type plusModelsJSON struct {
+	Kiro          []*ModelInfo `json:"kiro"`
+	CodeBuddy     []*ModelInfo `json:"codebuddy"`
+	CodeBuddyIntl []*ModelInfo `json:"codebuddy-intl"`
+}
+
+type plusModelStore struct {
+	mu   sync.RWMutex
+	data *plusModelsJSON
+}
+
 var modelsCatalogStore = &modelStore{}
+var plusModelsCatalogStore = &plusModelStore{}
 
 var updaterOnce sync.Once
 
@@ -68,6 +84,9 @@ func init() {
 	// Load embedded data as fallback on startup.
 	if err := loadModelsFromBytes(embeddedModelsJSON, "embed"); err != nil {
 		panic(fmt.Sprintf("registry: failed to parse embedded models.json: %v", err))
+	}
+	if err := loadPlusModelsFromBytes(embeddedPlusModelsJSON, "embed"); err != nil {
+		panic(fmt.Sprintf("registry: failed to parse embedded plus-models.json: %v", err))
 	}
 }
 
@@ -313,6 +332,23 @@ func getModels() *staticModelsJSON {
 	modelsCatalogStore.mu.RLock()
 	defer modelsCatalogStore.mu.RUnlock()
 	return modelsCatalogStore.data
+}
+
+func getPlusModels() *plusModelsJSON {
+	plusModelsCatalogStore.mu.RLock()
+	defer plusModelsCatalogStore.mu.RUnlock()
+	return plusModelsCatalogStore.data
+}
+
+func loadPlusModelsFromBytes(data []byte, source string) error {
+	var parsed plusModelsJSON
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return fmt.Errorf("%s: decode plus-models catalog: %w", source, err)
+	}
+	plusModelsCatalogStore.mu.Lock()
+	plusModelsCatalogStore.data = &parsed
+	plusModelsCatalogStore.mu.Unlock()
+	return nil
 }
 
 func validateModelsCatalog(data *staticModelsJSON) error {

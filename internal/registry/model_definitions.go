@@ -78,6 +78,30 @@ func GetAntigravityModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Antigravity)
 }
 
+// GetKiroModels returns the Kiro (AWS Q Developer) model definitions loaded from plus-models.json.
+func GetKiroModels() []*ModelInfo {
+	if p := getPlusModels(); p != nil {
+		return cloneModelInfos(p.Kiro)
+	}
+	return nil
+}
+
+// GetCodeBuddyModels returns the CodeBuddy (Tencent) model definitions loaded from plus-models.json.
+func GetCodeBuddyModels() []*ModelInfo {
+	if p := getPlusModels(); p != nil {
+		return cloneModelInfos(p.CodeBuddy)
+	}
+	return nil
+}
+
+// GetCodeBuddyIntlModels returns the CodeBuddy International model definitions loaded from plus-models.json.
+func GetCodeBuddyIntlModels() []*ModelInfo {
+	if p := getPlusModels(); p != nil {
+		return cloneModelInfos(p.CodeBuddyIntl)
+	}
+	return nil
+}
+
 // WithCodexBuiltins injects hard-coded Codex-only model definitions that should
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
@@ -159,14 +183,9 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 // It returns nil when the channel is unknown.
 //
 // Supported channels:
-//   - claude
-//   - gemini
-//   - vertex
-//   - gemini-cli
-//   - aistudio
-//   - codex
-//   - kimi
-//   - antigravity
+//   - claude, gemini, vertex, gemini-cli, aistudio
+//   - codex, kimi, antigravity
+//   - kiro, codebuddy, codebuddy-intl
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
 	switch key {
@@ -186,6 +205,12 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKimiModels()
 	case "antigravity":
 		return GetAntigravityModels()
+	case "kiro":
+		return GetKiroModels()
+	case "codebuddy":
+		return GetCodeBuddyModels()
+	case "codebuddy-intl":
+		return GetCodeBuddyIntlModels()
 	default:
 		return nil
 	}
@@ -199,6 +224,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 	}
 
 	data := getModels()
+	plusData := getPlusModels()
 	allModels := [][]*ModelInfo{
 		data.Claude,
 		data.Gemini,
@@ -208,6 +234,9 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.CodexPro,
 		data.Kimi,
 		data.Antigravity,
+		plusData.Kiro,
+		plusData.CodeBuddy,
+		plusData.CodeBuddyIntl,
 	}
 	for _, models := range allModels {
 		for _, m := range models {

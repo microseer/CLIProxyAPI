@@ -60,6 +60,12 @@ type ModelInfo struct {
 	// array (e.g., openai-compatibility.*.models[], *-api-key.models[]).
 	// UserDefined models have thinking configuration passed through without validation.
 	UserDefined bool `json:"-"`
+
+	// ExecutionTarget overrides the upstream model name used when executing requests
+	// for this model ID. When set, requests for this model will use ExecutionTarget
+	// as the actual model name sent to the provider. This enables model aliasing
+	// at the registry level without requiring translator changes.
+	ExecutionTarget string `json:"execution_target,omitempty"`
 }
 
 type availableModelsCacheEntry struct {
