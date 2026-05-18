@@ -64,12 +64,14 @@ type OAuthWebHandler struct {
 	sessions        map[string]*webAuthSession
 	mu              sync.RWMutex
 	onTokenObtained func(*KiroTokenData)
+	protocolHandler *ProtocolHandler
 }
 
 func NewOAuthWebHandler(cfg *config.Config) *OAuthWebHandler {
 	return &OAuthWebHandler{
-		cfg:      cfg,
-		sessions: make(map[string]*webAuthSession),
+		cfg:             cfg,
+		sessions:        make(map[string]*webAuthSession),
+		protocolHandler: NewProtocolHandler(),
 	}
 }
 
@@ -135,6 +137,30 @@ func (h *OAuthWebHandler) startSocialAuth(c *gin.Context, method string) {
 		return
 	}
 
+	if !IsProtocolHandlerInstalled() {
+		log.Info("Kiro protocol handler not installed, installing now...")
+		ctx := context.Background()
+		port, err := h.protocolHandler.Start(ctx)
+		if err != nil {
+			h.renderError(c, fmt.Sprintf("Failed to start protocol handler: %v", err))
+			return
+		}
+		if err := InstallProtocolHandler(port); err != nil {
+			log.Warnf("Failed to install protocol handler: %v", err)
+			h.renderError(c, fmt.Sprintf("Failed to install protocol handler. Please install manually or use Builder ID authentication instead."))
+			return
+		}
+		log.Infof("Kiro protocol handler installed successfully on port %d", port)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	port, err := h.protocolHandler.Start(ctx)
+	if err != nil {
+		cancel()
+		h.renderError(c, fmt.Sprintf("Failed to start protocol handler: %v", err))
+		return
+	}
+
 	socialClient := NewSocialAuthClient(h.cfg)
 
 	var provider string
@@ -146,8 +172,6 @@ func (h *OAuthWebHandler) startSocialAuth(c *gin.Context, method string) {
 
 	redirectURI := h.getSocialCallbackURL(c)
 	authURL := socialClient.buildLoginURL(provider, redirectURI, codeChallenge, stateID)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 
 	session := &webAuthSession{
 		stateID:       stateID,
@@ -166,25 +190,13 @@ func (h *OAuthWebHandler) startSocialAuth(c *gin.Context, method string) {
 	h.sessions[stateID] = session
 	h.mu.Unlock()
 
-	go func() {
-		<-ctx.Done()
-		h.mu.Lock()
-		if session.status == statusPending {
-			session.status = statusFailed
-			session.error = "Authentication timed out"
-		}
-		h.mu.Unlock()
-	}()
+	go h.waitForProtocolCallback(ctx, session, port)
 
 	c.Redirect(http.StatusFound, authURL)
 }
 
 func (h *OAuthWebHandler) getSocialCallbackURL(c *gin.Context) string {
-	scheme := "http"
-	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
-		scheme = "https"
-	}
-	return fmt.Sprintf("%s://%s/v0/oauth/kiro/social/callback", scheme, c.Request.Host)
+	return KiroRedirectURI
 }
 
 func (h *OAuthWebHandler) startBuilderIDAuth(c *gin.Context) {
@@ -317,6 +329,105 @@ func (h *OAuthWebHandler) startIDCAuth(c *gin.Context) {
 	go h.pollForToken(ctx, session)
 
 	h.renderStartPage(c, session)
+}
+
+func (h *OAuthWebHandler) waitForProtocolCallback(ctx context.Context, session *webAuthSession, port int) {
+	defer session.cancelFunc()
+
+	log.Infof("OAuth Web: waiting for protocol callback on port %d for session %s", port, session.stateID)
+
+	callback, err := h.protocolHandler.WaitForCallback(ctx)
+	if err != nil {
+		log.Errorf("OAuth Web: protocol callback failed: %v", err)
+		h.mu.Lock()
+		if session.status == statusPending {
+			session.status = statusFailed
+			session.error = fmt.Sprintf("Failed to receive callback: %v", err)
+		}
+		h.mu.Unlock()
+		return
+	}
+
+	if callback.Error != "" {
+		log.Errorf("OAuth Web: callback returned error: %s", callback.Error)
+		h.mu.Lock()
+		session.status = statusFailed
+		session.error = callback.Error
+		session.completedAt = time.Now()
+		h.mu.Unlock()
+		return
+	}
+
+	if callback.State != session.stateID {
+		log.Errorf("OAuth Web: state mismatch - expected %s, got %s", session.stateID, callback.State)
+		h.mu.Lock()
+		session.status = statusFailed
+		session.error = "State mismatch - possible CSRF attack"
+		session.completedAt = time.Now()
+		h.mu.Unlock()
+		return
+	}
+
+	socialClient := NewSocialAuthClient(h.cfg)
+	redirectURI := KiroRedirectURI
+
+	tokenReq := &CreateTokenRequest{
+		Code:         callback.Code,
+		CodeVerifier: session.codeVerifier,
+		RedirectURI:  redirectURI,
+	}
+
+	tokenResp, err := socialClient.CreateToken(ctx, tokenReq)
+	if err != nil {
+		log.Errorf("OAuth Web: token exchange failed: %v", err)
+		h.mu.Lock()
+		session.status = statusFailed
+		session.error = fmt.Sprintf("Token exchange failed: %v", err)
+		session.completedAt = time.Now()
+		h.mu.Unlock()
+		return
+	}
+
+	expiresIn := tokenResp.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 3600
+	}
+	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
+
+	email := ExtractEmailFromJWT(tokenResp.AccessToken)
+
+	var provider string
+	if session.authMethod == "google" {
+		provider = string(ProviderGoogle)
+	} else {
+		provider = string(ProviderGitHub)
+	}
+
+	tokenData := &KiroTokenData{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ProfileArn:   tokenResp.ProfileArn,
+		ExpiresAt:    expiresAt.Format(time.RFC3339),
+		AuthMethod:   session.authMethod,
+		Provider:     provider,
+		Email:        email,
+		Region:       "us-east-1",
+	}
+
+	h.mu.Lock()
+	session.status = statusSuccess
+	session.completedAt = time.Now()
+	session.expiresAt = expiresAt
+	session.tokenData = tokenData
+	h.mu.Unlock()
+
+	if h.onTokenObtained != nil {
+		h.onTokenObtained(tokenData)
+	}
+
+	h.saveTokenToFile(tokenData)
+
+	log.Infof("OAuth Web: social authentication successful for %s via %s", email, provider)
 }
 
 func (h *OAuthWebHandler) pollForToken(ctx context.Context, session *webAuthSession) {

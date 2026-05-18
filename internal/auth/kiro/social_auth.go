@@ -318,7 +318,7 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 }
 
 // LoginWithSocial performs OAuth login with Google or GitHub.
-// Uses local HTTP callback server instead of custom protocol handler to avoid redirect_mismatch errors.
+// Uses kiro:// protocol handler for OAuth callback.
 func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialProvider) (*KiroTokenData, error) {
 	providerName := string(provider)
 
@@ -326,34 +326,39 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 	fmt.Printf("║         Kiro Authentication (%s)                    ║\n", providerName)
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 
-	// Step 1: Start local HTTP callback server (instead of kiro:// protocol handler)
-	// This avoids redirect_mismatch errors with AWS Cognito
 	fmt.Println("\nSetting up authentication...")
 
-	// Step 2: Generate PKCE codes
+	if !IsProtocolHandlerInstalled() {
+		fmt.Println("\nInstalling kiro:// protocol handler...")
+		port, err := c.protocolHandler.Start(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to start protocol handler: %w", err)
+		}
+		if err := InstallProtocolHandler(port); err != nil {
+			return nil, fmt.Errorf("failed to install protocol handler: %w\n\nPlease install manually or use Builder ID authentication instead", err)
+		}
+		fmt.Printf("✓ Protocol handler installed on port %d\n", port)
+	}
+
+	port, err := c.protocolHandler.Start(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start protocol handler: %w", err)
+	}
+	log.Debugf("kiro social auth: protocol handler started on port %d", port)
+
 	codeVerifier, codeChallenge, err := generatePKCE()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate PKCE: %w", err)
 	}
 
-	// Step 3: Generate state
 	state, err := generateStateParam()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate state: %w", err)
 	}
 
-	// Step 4: Start local HTTP callback server
-	redirectURI, resultChan, err := c.startWebCallbackServer(ctx, state)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start callback server: %w", err)
-	}
-	log.Debugf("kiro social auth: callback server started at %s", redirectURI)
-
-	// Step 5: Build the login URL using HTTP redirect URI
+	redirectURI := KiroRedirectURI
 	authURL := c.buildLoginURL(providerName, redirectURI, codeChallenge, state)
 
-	// Set incognito mode based on config (defaults to true for Kiro, can be overridden with --no-incognito)
-	// Incognito mode enables multi-account support by bypassing cached sessions
 	if c.cfg != nil {
 		browser.SetIncognitoMode(c.cfg.IncognitoBrowser)
 		if !c.cfg.IncognitoBrowser {
@@ -362,11 +367,10 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 			log.Debug("kiro: using incognito mode for multi-account support")
 		}
 	} else {
-		browser.SetIncognitoMode(true) // Default to incognito if no config
+		browser.SetIncognitoMode(true)
 		log.Debug("kiro: using incognito mode for multi-account support (default)")
 	}
 
-	// Step 6: Open browser for user authentication
 	fmt.Println("\n════════════════════════════════════════════════════════════")
 	fmt.Printf("  Opening browser for %s authentication...\n", providerName)
 	fmt.Println("════════════════════════════════════════════════════════════")
@@ -382,78 +386,72 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 
 	fmt.Println("\n  Waiting for authentication callback...")
 
-	// Step 7: Wait for callback from HTTP server
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-time.After(socialAuthTimeout):
-		return nil, fmt.Errorf("authentication timed out")
-	case callback := <-resultChan:
-		if callback.Error != "" {
-			return nil, fmt.Errorf("authentication error: %s", callback.Error)
-		}
-
-		// State is already validated by the callback server
-		if callback.Code == "" {
-			return nil, fmt.Errorf("no authorization code received")
-		}
-
-		fmt.Println("\n✓ Authorization received!")
-
-		// Step 8: Exchange code for tokens
-		fmt.Println("Exchanging code for tokens...")
-
-		tokenReq := &CreateTokenRequest{
-			Code:         callback.Code,
-			CodeVerifier: codeVerifier,
-			RedirectURI:  redirectURI, // Use HTTP redirect URI, not kiro:// protocol
-		}
-
-		tokenResp, err := c.CreateToken(ctx, tokenReq)
-		if err != nil {
-			return nil, fmt.Errorf("failed to exchange code for tokens: %w", err)
-		}
-
-		fmt.Println("\n✓ Authentication successful!")
-
-		// Close the browser window
-		if err := browser.CloseBrowser(); err != nil {
-			log.Debugf("Failed to close browser: %v", err)
-		}
-
-		// Validate ExpiresIn - use default 1 hour if invalid
-		expiresIn := tokenResp.ExpiresIn
-		if expiresIn <= 0 {
-			expiresIn = 3600
-		}
-		expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-
-		// Try to extract email from JWT access token first
-		email := ExtractEmailFromJWT(tokenResp.AccessToken)
-
-		// If no email in JWT, ask user for account label (only in interactive mode)
-		if email == "" && isInteractiveTerminal() {
-			fmt.Print("\n  Enter account label for file naming (optional, press Enter to skip): ")
-			reader := bufio.NewReader(os.Stdin)
-			var err error
-			email, err = reader.ReadString('\n')
-			if err != nil {
-				log.Debugf("Failed to read account label: %v", err)
-			}
-			email = strings.TrimSpace(email)
-		}
-
-		return &KiroTokenData{
-			AccessToken:  tokenResp.AccessToken,
-			RefreshToken: tokenResp.RefreshToken,
-			ProfileArn:   tokenResp.ProfileArn,
-			ExpiresAt:    expiresAt.Format(time.RFC3339),
-			AuthMethod:   "social",
-			Provider:     providerName,
-			Email:        email, // JWT email or user-provided label
-			Region:       "us-east-1",
-		}, nil
+	callback, err := c.protocolHandler.WaitForCallback(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive callback: %w", err)
 	}
+
+	if callback.Error != "" {
+		return nil, fmt.Errorf("authentication error: %s", callback.Error)
+	}
+
+	if callback.State != state {
+		return nil, fmt.Errorf("state mismatch - possible CSRF attack")
+	}
+
+	if callback.Code == "" {
+		return nil, fmt.Errorf("no authorization code received")
+	}
+
+	fmt.Println("\n✓ Authorization received!")
+	fmt.Println("Exchanging code for tokens...")
+
+	tokenReq := &CreateTokenRequest{
+		Code:         callback.Code,
+		CodeVerifier: codeVerifier,
+		RedirectURI:  redirectURI,
+	}
+
+	tokenResp, err := c.CreateToken(ctx, tokenReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange code for tokens: %w", err)
+	}
+
+	fmt.Println("\n✓ Authentication successful!")
+
+	if err := browser.CloseBrowser(); err != nil {
+		log.Debugf("Failed to close browser: %v", err)
+	}
+
+	expiresIn := tokenResp.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 3600
+	}
+	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
+
+	email := ExtractEmailFromJWT(tokenResp.AccessToken)
+
+	if email == "" && isInteractiveTerminal() {
+		fmt.Print("\n  Enter account label for file naming (optional, press Enter to skip): ")
+		reader := bufio.NewReader(os.Stdin)
+		var err error
+		email, err = reader.ReadString('\n')
+		if err != nil {
+			log.Debugf("Failed to read account label: %v", err)
+		}
+		email = strings.TrimSpace(email)
+	}
+
+	return &KiroTokenData{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ProfileArn:   tokenResp.ProfileArn,
+		ExpiresAt:    expiresAt.Format(time.RFC3339),
+		AuthMethod:   "social",
+		Provider:     providerName,
+		Email:        email,
+		Region:       "us-east-1",
+	}, nil
 }
 
 // LoginWithGoogle performs OAuth login with Google.
