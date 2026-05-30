@@ -558,6 +558,7 @@ func main() {
 	} else if xaiLogin {
 		cmd.DoXAILogin(cfg, options)
 	} else if kiroCLILogin {
+		kiro.InitFingerprintConfig(cfg)
 		cmd.DoKiroCLILogin(cfg, options)
 	} else if codeBuddyLogin {
 		cmd.DoCodeBuddyLogin(cfg, options)
