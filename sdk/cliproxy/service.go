@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
+
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
@@ -939,6 +941,7 @@ func (s *Service) Run(ctx context.Context) error {
 		interval := 15 * time.Minute
 		s.coreManager.StartAutoRefresh(context.Background(), interval)
 		log.Infof("core auth auto-refresh started (interval=%s)", interval)
+		go s.startKiroModelRefresh(ctx, 3*time.Hour)
 	}
 
 	select {
@@ -1029,6 +1032,52 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		usage.StopDefault()
 	})
 	return shutdownErr
+}
+
+func (s *Service) startKiroModelRefresh(ctx context.Context, interval time.Duration) {
+	if s == nil || ctx == nil || interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Infof("kiro model refresh started (interval=%s)", interval)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshKiroModels()
+		}
+	}
+}
+
+func (s *Service) refreshKiroModels() {
+	if s == nil || s.coreManager == nil {
+		return
+	}
+
+	auths := s.coreManager.List()
+	refreshed := 0
+	for _, item := range auths {
+		if item == nil || item.ID == "" {
+			continue
+		}
+		auth, ok := s.coreManager.GetByID(item.ID)
+		if !ok || auth == nil || auth.Disabled {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(auth.Provider), "kiro") {
+			continue
+		}
+		if s.refreshModelRegistrationForAuth(auth) {
+			refreshed++
+		}
+	}
+
+	if refreshed > 0 {
+		log.Infof("kiro: refreshed model registrations for %d auth(s)", refreshed)
+	}
 }
 
 func (s *Service) ensureAuthDir() error {
@@ -1169,7 +1218,7 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetXAIModels()
 		models = applyExcludedModels(models, excluded)
 	case "kiro":
-		models = registry.GetKiroModels()
+		models = s.fetchKiroModels(a)
 		models = applyExcludedModels(models, excluded)
 	case "codebuddy":
 		models = registry.GetCodeBuddyModels()
@@ -1442,6 +1491,100 @@ func (s *Service) oauthExcludedModels(provider, authKind string) []string {
 		return nil
 	}
 	return cfg.OAuthExcludedModels[providerKey]
+}
+
+func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
+	if a == nil {
+		log.Debug("kiro: auth is nil, using static models")
+		return registry.GetKiroModels()
+	}
+
+	tokenData := s.extractKiroTokenData(a)
+	if tokenData == nil || tokenData.AccessToken == "" {
+		log.Debug("kiro: no valid token data in auth, using static models")
+		return registry.GetKiroModels()
+	}
+
+	kAuth := kiroauth.NewKiroAuth(s.cfg)
+	if kAuth == nil {
+		log.Warn("kiro: failed to create KiroAuth instance, using static models")
+		return registry.GetKiroModels()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	apiModels, err := kAuth.ListAvailableModels(ctx, tokenData)
+	if err != nil {
+		log.Warnf("kiro: failed to fetch dynamic models: %v, using static models", err)
+		return registry.GetKiroModels()
+	}
+
+	if len(apiModels) == 0 {
+		log.Debug("kiro: API returned no models, using static models")
+		return registry.GetKiroModels()
+	}
+
+	apiModelInfos := toKiroAPIModels(apiModels)
+	models := registry.ConvertKiroAPIModels(apiModelInfos)
+	models = registry.MergeWithStaticMetadata(models, registry.GetKiroModels())
+
+	log.Infof("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
+	return models
+}
+
+func (s *Service) extractKiroTokenData(a *coreauth.Auth) *kiroauth.KiroTokenData {
+	if a == nil {
+		return nil
+	}
+
+	var accessToken, profileArn, refreshToken string
+
+	if a.Attributes != nil {
+		accessToken = strings.TrimSpace(a.Attributes["access_token"])
+		profileArn = strings.TrimSpace(a.Attributes["profile_arn"])
+		refreshToken = strings.TrimSpace(a.Attributes["refresh_token"])
+	}
+
+	if accessToken == "" && a.Metadata != nil {
+		if at, ok := a.Metadata["access_token"].(string); ok {
+			accessToken = strings.TrimSpace(at)
+		}
+		if pa, ok := a.Metadata["profile_arn"].(string); ok {
+			profileArn = strings.TrimSpace(pa)
+		}
+		if rt, ok := a.Metadata["refresh_token"].(string); ok {
+			refreshToken = strings.TrimSpace(rt)
+		}
+	}
+
+	if accessToken == "" {
+		return nil
+	}
+
+	return &kiroauth.KiroTokenData{
+		AccessToken:  accessToken,
+		ProfileArn:   profileArn,
+		RefreshToken: refreshToken,
+	}
+}
+
+func toKiroAPIModels(src []*kiroauth.KiroModel) []*registry.KiroAPIModel {
+	out := make([]*registry.KiroAPIModel, 0, len(src))
+	for _, m := range src {
+		if m == nil {
+			continue
+		}
+		out = append(out, &registry.KiroAPIModel{
+			ModelID:        m.ModelID,
+			ModelName:      m.ModelName,
+			Description:    m.Description,
+			RateMultiplier: m.RateMultiplier,
+			RateUnit:       m.RateUnit,
+			MaxInputTokens: m.MaxInputTokens,
+		})
+	}
+	return out
 }
 
 func applyExcludedModels(models []*ModelInfo, excluded []string) []*ModelInfo {
