@@ -318,7 +318,7 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 }
 
 // LoginWithSocial performs OAuth login with Google or GitHub.
-// Uses kiro:// protocol handler for OAuth callback.
+// Uses kiro:// protocol handler for OAuth callback (aligned with Kiro Desktop/Account Manager).
 func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialProvider) (*KiroTokenData, error) {
 	providerName := string(provider)
 
@@ -356,6 +356,7 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 		return nil, fmt.Errorf("failed to generate state: %w", err)
 	}
 
+	// Use kiro:// protocol handler for OAuth callback
 	redirectURI := KiroRedirectURI
 	authURL := c.buildLoginURL(providerName, redirectURI, codeChallenge, state)
 

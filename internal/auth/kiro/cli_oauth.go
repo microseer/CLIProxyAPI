@@ -346,7 +346,7 @@ func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResu
 		socialClient := NewSocialAuthClient(o.cfg)
 		return socialClient.LoginWithGitHub(ctx)
 	default:
-		return nil, fmt.Errorf("unsupported Kiro login option: %s", cb.LoginOption)
+		return nil, fmt.Errorf("unsupported Kiro login option: %s (use 'google', 'github', 'builderid', or 'enterprise')", loginOption)
 	}
 }
 
