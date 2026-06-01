@@ -1678,7 +1678,9 @@ func resolveIDCStartURL(provider, startURL string) string {
 }
 
 func ComputeIDCClientIDHash(startURL string) string {
-	payload, err := json.Marshal(map[string]string{"startUrl": startURL})
+	normalizedURL := strings.TrimSpace(startURL)
+	normalizedURL = strings.TrimRight(normalizedURL, "/")
+	payload, err := json.Marshal(map[string]string{"startUrl": normalizedURL})
 	if err != nil {
 		return ""
 	}

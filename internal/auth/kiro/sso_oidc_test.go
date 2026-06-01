@@ -259,3 +259,49 @@ func TestBuildAuthorizationURL(t *testing.T) {
 		}
 	}
 }
+
+func TestComputeIDCClientIDHash(t *testing.T) {
+	// Standard Builder ID start URL
+	standardURL := "https://view.awsapps.com/start"
+	expectedHash := ComputeIDCClientIDHash(standardURL)
+
+	if expectedHash == "" {
+		t.Fatal("expected hash to be non-empty")
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		wantHash string
+	}{
+		{
+			name:     "trailing slash",
+			input:    "https://view.awsapps.com/start/",
+			wantHash: expectedHash,
+		},
+		{
+			name:     "spaces and trailing slash",
+			input:    "  https://view.awsapps.com/start/   ",
+			wantHash: expectedHash,
+		},
+		{
+			name:     "multiple trailing slashes",
+			input:    "https://view.awsapps.com/start///",
+			wantHash: expectedHash,
+		},
+		{
+			name:     "empty start URL",
+			input:    "",
+			wantHash: ComputeIDCClientIDHash(""), // should still generate a valid hash for empty string
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ComputeIDCClientIDHash(tt.input)
+			if got != tt.wantHash {
+				t.Errorf("ComputeIDCClientIDHash(%q) = %q, want %q", tt.input, got, tt.wantHash)
+			}
+		})
+	}
+}
