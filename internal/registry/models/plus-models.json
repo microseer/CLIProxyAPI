@@ -18,6 +18,40 @@
       }
     },
     {
+      "id": "kiro-claude-opus-4-8",
+      "object": "model",
+      "created": 1780195200,
+      "owned_by": "aws",
+      "type": "kiro",
+      "display_name": "Kiro Claude Opus 4.8",
+      "description": "Claude Opus 4.8 via Kiro (2.2x credit)",
+      "context_length": 1000000,
+      "max_completion_tokens": 64000,
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    },
+    {
+      "id": "kiro-claude-opus-4-7",
+      "object": "model",
+      "created": 1780108800,
+      "owned_by": "aws",
+      "type": "kiro",
+      "display_name": "Kiro Claude Opus 4.7",
+      "description": "Claude Opus 4.7 via Kiro (2.2x credit)",
+      "context_length": 1000000,
+      "max_completion_tokens": 64000,
+      "thinking": {
+        "min": 1024,
+        "max": 32000,
+        "zero_allowed": true,
+        "dynamic_allowed": true
+      }
+    },
+    {
       "id": "kiro-claude-opus-4-6",
       "object": "model",
       "created": 1736899200,
