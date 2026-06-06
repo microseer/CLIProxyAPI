@@ -66,7 +66,9 @@ func normalizeKiroModelID(modelID string) string {
 		return ""
 	}
 
-	return strings.TrimSpace(modelID)
+	modelID = strings.TrimSpace(modelID)
+	normalized := strings.ReplaceAll(modelID, ".", "-")
+	return normalized
 }
 
 func generateKiroDisplayName(modelName, normalizedID string) string {
