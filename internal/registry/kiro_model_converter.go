@@ -61,95 +61,12 @@ func ConvertKiroAPIModels(kiroModels []*KiroAPIModel) []*ModelInfo {
 	return result
 }
 
-func GenerateAgenticVariants(models []*ModelInfo) []*ModelInfo {
-	if len(models) == 0 {
-		return nil
-	}
-
-	result := make([]*ModelInfo, 0, len(models)*2)
-	for _, model := range models {
-		if model == nil {
-			continue
-		}
-
-		result = append(result, model)
-		if strings.HasSuffix(model.ID, "-agentic") {
-			continue
-		}
-		if model.ID == "kiro-auto" {
-			continue
-		}
-
-		agenticModel := &ModelInfo{
-			ID:                  model.ID + "-agentic",
-			Object:              model.Object,
-			Created:             model.Created,
-			OwnedBy:             model.OwnedBy,
-			Type:                model.Type,
-			DisplayName:         model.DisplayName + " (Agentic)",
-			Description:         generateAgenticDescription(model.Description),
-			ContextLength:       model.ContextLength,
-			MaxCompletionTokens: model.MaxCompletionTokens,
-			ExecutionTarget:     model.ExecutionTarget,
-			Thinking:            cloneKiroThinkingSupport(model.Thinking),
-		}
-
-		result = append(result, agenticModel)
-	}
-
-	return result
-}
-
-func MergeWithStaticMetadata(dynamicModels, staticModels []*ModelInfo) []*ModelInfo {
-	if len(dynamicModels) == 0 && len(staticModels) == 0 {
-		return nil
-	}
-
-	staticMap := make(map[string]*ModelInfo, len(staticModels))
-	for _, sm := range staticModels {
-		if sm != nil && sm.ID != "" {
-			staticMap[sm.ID] = sm
-		}
-	}
-
-	seenIDs := make(map[string]struct{})
-	result := make([]*ModelInfo, 0, len(dynamicModels))
-	for _, dm := range dynamicModels {
-		if dm == nil || dm.ID == "" {
-			continue
-		}
-		if _, seen := seenIDs[dm.ID]; seen {
-			continue
-		}
-		seenIDs[dm.ID] = struct{}{}
-
-		if sm, exists := staticMap[dm.ID]; exists {
-			if sm.ExecutionTarget == "" && dm.ExecutionTarget != "" {
-				merged := cloneModelInfo(sm)
-				merged.ExecutionTarget = dm.ExecutionTarget
-				result = append(result, merged)
-			} else {
-				result = append(result, sm)
-			}
-		} else {
-			result = append(result, dm)
-		}
-	}
-
-	return result
-}
-
 func normalizeKiroModelID(modelID string) string {
 	if modelID == "" {
 		return ""
 	}
 
-	modelID = strings.TrimSpace(modelID)
-	normalized := strings.ReplaceAll(modelID, ".", "-")
-	if !strings.HasPrefix(normalized, "kiro-") {
-		normalized = "kiro-" + normalized
-	}
-	return normalized
+	return strings.TrimSpace(modelID)
 }
 
 func generateKiroDisplayName(modelName, normalizedID string) string {
@@ -157,7 +74,7 @@ func generateKiroDisplayName(modelName, normalizedID string) string {
 		return "Kiro " + modelName
 	}
 
-	displayID := strings.TrimPrefix(normalizedID, "kiro-")
+	displayID := normalizedID
 	words := strings.Split(displayID, "-")
 	for i, word := range words {
 		if len(word) > 0 {

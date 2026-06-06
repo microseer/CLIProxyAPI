@@ -1536,9 +1536,8 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 
 	apiModelInfos := toKiroAPIModels(apiModels)
 	models := registry.ConvertKiroAPIModels(apiModelInfos)
-	models = registry.MergeWithStaticMetadata(models, registry.GetKiroModels())
 
-	log.Infof("kiro: successfully fetched %d models from API (including agentic variants)", len(models))
+	log.Infof("kiro: successfully fetched %d models from API", len(models))
 	return models
 }
 

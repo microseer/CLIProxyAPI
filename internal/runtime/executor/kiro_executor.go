@@ -716,13 +716,11 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		}
 	}
 
-	// Determine agentic mode and effective profile ARN using helper functions
-	isAgentic, isChatOnly := determineAgenticMode(req.Model)
 	effectiveProfileArn := getEffectiveProfileArnWithWarning(auth, profileArn)
 
 	// Execute with retry on 401/403 and 429 (quota exhausted)
 	// Note: currentOrigin and kiroPayload are built inside executeWithRetry for each endpoint
-	resp, err = e.executeWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, to, reporter, "", kiroModelID, isAgentic, isChatOnly, tokenKey)
+	resp, err = e.executeWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, to, reporter, "", kiroModelID, false, false, tokenKey)
 	return resp, err
 }
 
@@ -1150,13 +1148,11 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		}
 	}
 
-	// Determine agentic mode and effective profile ARN using helper functions
-	isAgentic, isChatOnly := determineAgenticMode(req.Model)
 	effectiveProfileArn := getEffectiveProfileArnWithWarning(auth, profileArn)
 
 	// Execute stream with retry on 401/403 and 429 (quota exhausted)
 	// Note: currentOrigin and kiroPayload are built inside executeStreamWithRetry for each endpoint
-	streamKiro, errStreamKiro := e.executeStreamWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, reporter, "", kiroModelID, isAgentic, isChatOnly, tokenKey)
+	streamKiro, errStreamKiro := e.executeStreamWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, reporter, "", kiroModelID, false, false, tokenKey)
 	if errStreamKiro != nil {
 		return nil, errStreamKiro
 	}
@@ -1657,14 +1653,6 @@ func findRealThinkingEndTag(content string, alreadyInCodeBlock, alreadyInInlineC
 	}
 }
 
-// determineAgenticMode determines if the model is an agentic or chat-only variant.
-// Returns (isAgentic, isChatOnly) based on model name suffixes.
-func determineAgenticMode(model string) (isAgentic, isChatOnly bool) {
-	isAgentic = strings.HasSuffix(model, "-agentic")
-	isChatOnly = strings.HasSuffix(model, "-chat")
-	return isAgentic, isChatOnly
-}
-
 // getEffectiveProfileArnWithWarning suppresses profileArn for builder-id and AWS SSO OIDC auth.
 // Builder-id users (auth_method == "builder-id") and AWS SSO OIDC users (auth_type == "aws_sso_oidc")
 // don't need profileArn — sending it causes 403 errors.
@@ -1742,55 +1730,27 @@ var defaultKiroModelMap = map[string]string{
 func (e *KiroExecutor) mapModelToKiro(model string) string {
 	model = strings.TrimSpace(model)
 
-	// Handle agentic and chat variants dynamically
-	baseModel := model
-	if strings.HasSuffix(model, "-agentic") {
-		baseModel = strings.TrimSuffix(model, "-agentic")
-	} else if strings.HasSuffix(model, "-chat") {
-		baseModel = strings.TrimSuffix(model, "-chat")
-	}
-
-	if kiroID, ok := defaultKiroModelMap[baseModel]; ok {
+	if kiroID, ok := defaultKiroModelMap[model]; ok {
 		return kiroID
 	}
 
-	if strings.HasPrefix(model, "kiro-") {
-		if modelInfo := registry.LookupModelInfo(model, "kiro"); modelInfo != nil {
-			// Prefer explicit execution target from registry when present. This preserves
-			// fully-qualified upstream model IDs such as 'kiro-glm-5' that the Kiro API may expect.
-			if modelInfo.ExecutionTarget != "" {
-				log.Debugf("kiro: using registry execution target '%s' for model '%s'", modelInfo.ExecutionTarget, model)
-				return modelInfo.ExecutionTarget
-			}
-			// Fall back to registry ID only when it already looks like a backend ID
-			// (i.e. not a user-facing kiro-/amazonq- alias).
-			if modelInfo.ID != "" &&
-				!strings.HasPrefix(modelInfo.ID, "kiro-") &&
-				!strings.HasPrefix(modelInfo.ID, "amazonq-") {
-				log.Debugf("kiro: using registry ID '%s' for model '%s'", modelInfo.ID, model)
-				return modelInfo.ID
-			}
-			// If registry entry exists but no explicit target, infer backend format conservatively
-			if backendID := kiroBackendModelID(baseModel); backendID != "" {
-				log.Debugf("kiro: mapped registry model '%s' to backend ID '%s'", model, backendID)
-				return backendID
-			}
+	if modelInfo := registry.LookupModelInfo(model, "kiro"); modelInfo != nil {
+		// Prefer explicit execution target from registry when present. This preserves
+		// fully-qualified upstream model IDs such as 'kiro-glm-5' that the Kiro API may expect.
+		if modelInfo.ExecutionTarget != "" {
+			log.Debugf("kiro: using registry execution target '%s' for model '%s'", modelInfo.ExecutionTarget, model)
+			return modelInfo.ExecutionTarget
 		}
-
-		// No registry entry: infer backend format from the user-facing kiro-* alias.
-		if backendID := kiroBackendModelID(baseModel); backendID != "" {
-			log.Debugf("kiro: inferred backend ID '%s' for model '%s'", backendID, model)
-			return backendID
+		if modelInfo.ID != "" {
+			log.Debugf("kiro: using registry ID '%s' for model '%s'", modelInfo.ID, model)
+			return modelInfo.ID
 		}
-		log.Debugf("kiro: passing model through unchanged for '%s'", model)
-		return model
 	}
 
 	// If a backend model ID is already provided directly (e.g. "glm-5"),
 	// forward it as-is instead of forcing a Claude fallback.
 	modelLower := strings.ToLower(model)
 	if !strings.HasPrefix(model, "amazonq-") &&
-		!strings.HasPrefix(model, "kiro-") &&
 		!strings.Contains(modelLower, "claude") &&
 		!strings.Contains(modelLower, "sonnet") &&
 		!strings.Contains(modelLower, "haiku") &&
@@ -1839,33 +1799,6 @@ func (e *KiroExecutor) mapModelToKiro(model string) string {
 	// Final fallback to Sonnet 4.5 (most commonly used model)
 	log.Warnf("kiro: unknown model '%s', falling back to claude-sonnet-4.5", model)
 	return "claude-sonnet-4.5"
-}
-
-func kiroBackendModelID(model string) string {
-	backendID := strings.TrimSpace(model)
-	if backendID == "" {
-		return ""
-	}
-	backendID = strings.TrimPrefix(backendID, "kiro-")
-	backendID = strings.TrimSuffix(backendID, "-agentic")
-	if backendID == "" {
-		return ""
-	}
-
-	var b strings.Builder
-	b.Grow(len(backendID))
-	for i := 0; i < len(backendID); i++ {
-		if backendID[i] == '-' && i > 0 && i < len(backendID)-1 {
-			prev := backendID[i-1]
-			next := backendID[i+1]
-			if prev >= '0' && prev <= '9' && next >= '0' && next <= '9' {
-				b.WriteByte('.')
-				continue
-			}
-		}
-		b.WriteByte(backendID[i])
-	}
-	return b.String()
 }
 
 // EventStreamError represents an Event Stream processing error
@@ -4719,14 +4652,13 @@ func (e *KiroExecutor) callKiroAndBuffer(
 	log.Debugf("kiro/websearch GAR request: %d bytes", len(body))
 
 	kiroModelID := e.mapModelToKiro(req.Model)
-	isAgentic, isChatOnly := determineAgenticMode(req.Model)
 	effectiveProfileArn := getEffectiveProfileArnWithWarning(auth, profileArn)
 
 	tokenKey := getAccountKey(auth)
 
 	kiroStream, err := e.executeStreamWithRetry(
 		ctx, auth, req, opts, accessToken, effectiveProfileArn,
-		nil, body, from, nil, "", kiroModelID, isAgentic, isChatOnly, tokenKey,
+		nil, body, from, nil, "", kiroModelID, false, false, tokenKey,
 	)
 	if err != nil {
 		return nil, err
@@ -4761,7 +4693,6 @@ func (e *KiroExecutor) callKiroDirectStream(
 	body := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), true)
 
 	kiroModelID := e.mapModelToKiro(req.Model)
-	isAgentic, isChatOnly := determineAgenticMode(req.Model)
 	effectiveProfileArn := getEffectiveProfileArnWithWarning(auth, profileArn)
 
 	tokenKey := getAccountKey(auth)
@@ -4772,7 +4703,7 @@ func (e *KiroExecutor) callKiroDirectStream(
 
 	stream, streamErr := e.executeStreamWithRetry(
 		ctx, auth, req, opts, accessToken, effectiveProfileArn,
-		nil, body, from, reporter, "", kiroModelID, isAgentic, isChatOnly, tokenKey,
+		nil, body, from, reporter, "", kiroModelID, false, false, tokenKey,
 	)
 	return stream, streamErr
 }
@@ -4811,7 +4742,6 @@ func (e *KiroExecutor) executeNonStreamFallback(
 	body := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), true)
 
 	kiroModelID := e.mapModelToKiro(req.Model)
-	isAgentic, isChatOnly := determineAgenticMode(req.Model)
 	effectiveProfileArn := getEffectiveProfileArnWithWarning(auth, profileArn)
 	tokenKey := getAccountKey(auth)
 
@@ -4819,6 +4749,6 @@ func (e *KiroExecutor) executeNonStreamFallback(
 	var err error
 	defer reporter.trackFailure(ctx, &err)
 
-	resp, err := e.executeWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, to, reporter, "", kiroModelID, isAgentic, isChatOnly, tokenKey)
+	resp, err := e.executeWithRetry(ctx, auth, req, opts, accessToken, effectiveProfileArn, nil, body, from, to, reporter, "", kiroModelID, false, false, tokenKey)
 	return resp, err
 }
