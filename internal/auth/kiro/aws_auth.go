@@ -187,7 +187,7 @@ func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData)
 
 	usage := &KiroUsageInfo{
 		SubscriptionTitle: result.SubscriptionInfo.SubscriptionTitle,
-		NextReset:         fmt.Sprintf("%v", result.NextDateReset),
+		NextReset:         fmt.Sprintf("%.0f", result.NextDateReset),
 	}
 
 	if len(result.UsageBreakdownList) > 0 {

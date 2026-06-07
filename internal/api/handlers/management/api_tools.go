@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/geminicli"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
@@ -132,6 +134,33 @@ func (h *Handler) APICall(c *gin.Context) {
 
 	authIndex := firstNonEmptyString(body.AuthIndexSnake, body.AuthIndexCamel, body.AuthIndexPascal)
 	auth := h.authByIndex(authIndex)
+
+	// kiro usage limits request
+	if auth != nil {
+		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+		if provider == "kiro" {
+			usageInfo, errUsage := h.getKiroUsageLimits(c.Request.Context(), auth)
+			if errUsage != nil {
+				log.WithError(errUsage).Debug("failed to get kiro usage limits")
+				c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get usage limits"})
+				return
+			}
+
+			// Convert usage info to JSON response
+			usageJSON, errMarshal := json.Marshal(usageInfo)
+			if errMarshal != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal usage info"})
+				return
+			}
+
+			c.JSON(http.StatusOK, apiCallResponse{
+				StatusCode: http.StatusOK,
+				Header:     map[string][]string{"Content-Type": {"application/json"}},
+				Body:       string(usageJSON),
+			})
+			return
+		}
+	}
 
 	reqHeaders := body.Header
 	if reqHeaders == nil {
@@ -791,4 +820,148 @@ func buildProxyTransport(proxyStr string) *http.Transport {
 		return nil
 	}
 	return transport
+}
+
+// getKiroUsageLimits retrieves usage limits for a Kiro auth credential.
+// It extracts token data from the auth metadata and calls the KiroAuth.GetUsageLimits method.
+// If the token is about to expire, it triggers an on-demand refresh before querying.
+func (h *Handler) getKiroUsageLimits(ctx context.Context, auth *coreauth.Auth) (*kiro.KiroUsageInfo, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("auth is nil")
+	}
+
+	// Refresh token if it's about to expire
+	h.refreshKiroTokenIfNeeded(ctx, auth)
+
+	// Extract token data from auth metadata
+	tokenData, err := h.extractKiroTokenData(auth)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract token data: %w", err)
+	}
+
+	// Create KiroAuth instance
+	kiroAuth := kiro.NewKiroAuth(h.cfg)
+
+	// Call GetUsageLimits
+	usageInfo, err := kiroAuth.GetUsageLimits(ctx, tokenData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get usage limits: %w", err)
+	}
+
+	return usageInfo, nil
+}
+
+// refreshKiroTokenIfNeeded checks if a Kiro token is about to expire and triggers
+// an on-demand refresh. The refreshed auth is written back to the auth manager
+// so subsequent calls pick up the new token immediately.
+func (h *Handler) refreshKiroTokenIfNeeded(ctx context.Context, auth *coreauth.Auth) {
+	if auth == nil || auth.Metadata == nil || h.authManager == nil {
+		return
+	}
+
+	expiresAtStr, ok := auth.Metadata["expires_at"].(string)
+	if !ok || expiresAtStr == "" {
+		return
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339, expiresAtStr)
+	if err != nil {
+		return
+	}
+
+	// Refresh if token expires within 20 minutes
+	const refreshLead = 20 * time.Minute
+	if time.Until(expiresAt) > refreshLead {
+		return
+	}
+
+	log.Infof("kiro token for auth %s expires soon (%v), triggering on-demand refresh", auth.ID, time.Until(expiresAt).Round(time.Second))
+
+	authenticator := sdkAuth.NewKiroAuthenticator()
+	updated, err := authenticator.Refresh(ctx, h.cfg, auth)
+	if err != nil {
+		log.WithError(err).Warn("kiro on-demand token refresh failed")
+		return
+	}
+
+	if _, updateErr := h.authManager.Update(ctx, updated); updateErr != nil {
+		log.WithError(updateErr).Warn("failed to update refreshed kiro token in auth manager")
+		return
+	}
+
+	// Copy refreshed metadata back to the caller's auth pointer
+	// so extractKiroTokenData picks up the new token immediately.
+	auth.Metadata = updated.Metadata
+	auth.LastRefreshedAt = updated.LastRefreshedAt
+	auth.NextRefreshAfter = updated.NextRefreshAfter
+	auth.UpdatedAt = updated.UpdatedAt
+
+	log.Infof("kiro token for auth %s refreshed successfully", auth.ID)
+}
+
+// extractKiroTokenData extracts KiroTokenData from auth metadata.
+func (h *Handler) extractKiroTokenData(auth *coreauth.Auth) (*kiro.KiroTokenData, error) {
+	if auth == nil || auth.Metadata == nil {
+		return nil, fmt.Errorf("auth or metadata is nil")
+	}
+
+	metadata := auth.Metadata
+
+	// Extract fields from metadata (snake_case keys)
+	tokenData := &kiro.KiroTokenData{}
+
+	if v, ok := metadata["access_token"].(string); ok {
+		tokenData.AccessToken = v
+	}
+
+	if v, ok := metadata["refresh_token"].(string); ok {
+		tokenData.RefreshToken = v
+	}
+
+	if v, ok := metadata["profile_arn"].(string); ok {
+		tokenData.ProfileArn = v
+	}
+
+	if v, ok := metadata["expires_at"].(string); ok {
+		tokenData.ExpiresAt = v
+	}
+
+	if v, ok := metadata["auth_method"].(string); ok {
+		tokenData.AuthMethod = v
+	}
+
+	if v, ok := metadata["provider"].(string); ok {
+		tokenData.Provider = v
+	}
+
+	if v, ok := metadata["client_id"].(string); ok {
+		tokenData.ClientID = v
+	}
+
+	if v, ok := metadata["client_secret"].(string); ok {
+		tokenData.ClientSecret = v
+	}
+
+	if v, ok := metadata["client_id_hash"].(string); ok {
+		tokenData.ClientIDHash = v
+	}
+
+	if v, ok := metadata["email"].(string); ok {
+		tokenData.Email = v
+	}
+
+	if v, ok := metadata["start_url"].(string); ok {
+		tokenData.StartURL = v
+	}
+
+	if v, ok := metadata["region"].(string); ok {
+		tokenData.Region = v
+	}
+
+	// Validate required fields
+	if tokenData.AccessToken == "" {
+		return nil, fmt.Errorf("access token not found in metadata")
+	}
+
+	return tokenData, nil
 }
