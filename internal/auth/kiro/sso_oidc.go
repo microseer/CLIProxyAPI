@@ -1613,8 +1613,11 @@ func (c *SSOOIDCClient) LoginWithIDCAuthCodeProvider(ctx context.Context, startU
 
 		fmt.Println("\n✓ Authentication successful!")
 
-		fmt.Println("Fetching profile information...")
-		profileArn := c.FetchProfileArn(ctx, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
+		var profileArn string
+		if provider != "BuilderId" {
+			fmt.Println("Fetching profile information...")
+			profileArn = c.FetchProfileArn(ctx, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
+		}
 
 		email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, "idc")
 		if email != "" {
