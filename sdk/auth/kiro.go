@@ -178,12 +178,17 @@ func (a *KiroAuthenticator) Login(ctx context.Context, cfg *config.Config, opts 
 				Region:        opts.Metadata["region"],
 				Provider:      provider,
 				UseDeviceCode: opts.Metadata["flow"] == "device",
+				NoBrowser:     opts.NoBrowser,
 			}
 		}
 	}
 
 	// Use the unified method selection flow (Builder ID or IDC)
 	ssoClient := kiroauth.NewSSOOIDCClient(cfg)
+	// If idcOpts is nil but NoBrowser is set, create a minimal opts to pass NoBrowser
+	if idcOpts == nil && opts != nil && opts.NoBrowser {
+		idcOpts = &kiroauth.IDCLoginOptions{NoBrowser: true}
+	}
 	tokenData, err := ssoClient.LoginWithMethodSelection(ctx, idcOpts)
 	if err != nil {
 		return nil, fmt.Errorf("login failed: %w", err)
@@ -228,8 +233,6 @@ func (a *KiroAuthenticator) LoginWithCLI(ctx context.Context, cfg *config.Config
 
 	return a.createAuthRecord(tokenData, "cli")
 }
-
-
 
 // Refresh refreshes an expired Kiro token using AWS SSO OIDC.
 func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, auth *coreauth.Auth) (*coreauth.Auth, error) {

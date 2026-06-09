@@ -322,7 +322,7 @@ func (o *KiroCLIOAuth) RefreshToken(ctx context.Context, refreshToken string) (*
 	}, nil
 }
 
-func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResult) (*KiroTokenData, error) {
+func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResult, noBrowser bool) (*KiroTokenData, error) {
 	loginOption := strings.ToLower(strings.TrimSpace(cb.LoginOption))
 	region := strings.TrimSpace(cb.IDCRegion)
 	if region == "" {
@@ -332,19 +332,19 @@ func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResu
 	ssoClient := NewSSOOIDCClient(o.cfg)
 	switch loginOption {
 	case "builderid", "builder-id", "builder_id":
-		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, builderIDStartURL, region, "BuilderId")
+		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, builderIDStartURL, region, "BuilderId", noBrowser)
 	case "enterprise", "idc":
 		issuerURL := strings.TrimSpace(cb.IssuerURL)
 		if issuerURL == "" {
 			issuerURL = enterpriseStartURL
 		}
-		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, issuerURL, region, "Enterprise")
+		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, issuerURL, region, "Enterprise", noBrowser)
 	case "google":
 		socialClient := NewSocialAuthClient(o.cfg)
-		return socialClient.LoginWithGoogle(ctx)
+		return socialClient.LoginWithGoogle(ctx, noBrowser)
 	case "github":
 		socialClient := NewSocialAuthClient(o.cfg)
-		return socialClient.LoginWithGitHub(ctx)
+		return socialClient.LoginWithGitHub(ctx, noBrowser)
 	default:
 		return nil, fmt.Errorf("unsupported Kiro login option: %s (use 'google', 'github', 'builderid', or 'enterprise')", loginOption)
 	}
@@ -395,7 +395,7 @@ func (o *KiroCLIOAuth) LoginWithCLI(ctx context.Context, noBrowser bool) (*KiroT
 		}
 
 		if cb.LoginOption != "" {
-			tokenData, errLoginOption := o.handleLoginOption(ctx, cb)
+			tokenData, errLoginOption := o.handleLoginOption(ctx, cb, noBrowser)
 			if errLoginOption != nil {
 				return nil, errLoginOption
 			}

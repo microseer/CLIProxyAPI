@@ -319,7 +319,7 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 
 // LoginWithSocial performs OAuth login with Google or GitHub.
 // Uses kiro:// protocol handler for OAuth callback (aligned with Kiro Desktop/Account Manager).
-func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialProvider) (*KiroTokenData, error) {
+func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialProvider, noBrowser bool) (*KiroTokenData, error) {
 	providerName := string(provider)
 
 	fmt.Println("\n╔══════════════════════════════════════════════════════════╗")
@@ -377,12 +377,8 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 	fmt.Println("════════════════════════════════════════════════════════════")
 	fmt.Printf("\n  URL: %s\n\n", authURL)
 
-	if err := browser.OpenURL(authURL); err != nil {
+	if err := openBrowserURL(authURL, noBrowser); err != nil {
 		log.Warnf("Could not open browser automatically: %v", err)
-		fmt.Println("  ⚠ Could not open browser automatically.")
-		fmt.Println("  Please open the URL above in your browser manually.")
-	} else {
-		fmt.Println("  (Browser opened automatically)")
 	}
 
 	fmt.Println("\n  Waiting for authentication callback...")
@@ -456,13 +452,13 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 }
 
 // LoginWithGoogle performs OAuth login with Google.
-func (c *SocialAuthClient) LoginWithGoogle(ctx context.Context) (*KiroTokenData, error) {
-	return c.LoginWithSocial(ctx, ProviderGoogle)
+func (c *SocialAuthClient) LoginWithGoogle(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
+	return c.LoginWithSocial(ctx, ProviderGoogle, noBrowser)
 }
 
 // LoginWithGitHub performs OAuth login with GitHub.
-func (c *SocialAuthClient) LoginWithGitHub(ctx context.Context) (*KiroTokenData, error) {
-	return c.LoginWithSocial(ctx, ProviderGitHub)
+func (c *SocialAuthClient) LoginWithGitHub(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
+	return c.LoginWithSocial(ctx, ProviderGitHub, noBrowser)
 }
 
 // forceDefaultProtocolHandler sets our protocol handler as the default for kiro:// URLs.

@@ -163,16 +163,16 @@ func (o *KiroOAuth) startCallbackServer(ctx context.Context, expectedState strin
 }
 
 // LoginWithBuilderID performs OAuth login with AWS Builder ID using device code flow.
-func (o *KiroOAuth) LoginWithBuilderID(ctx context.Context) (*KiroTokenData, error) {
+func (o *KiroOAuth) LoginWithBuilderID(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
 	ssoClient := NewSSOOIDCClient(o.cfg)
-	return ssoClient.LoginWithBuilderID(ctx)
+	return ssoClient.LoginWithBuilderID(ctx, noBrowser)
 }
 
 // LoginWithBuilderIDAuthCode performs OAuth login with AWS Builder ID using authorization code flow.
 // This provides a better UX than device code flow as it uses automatic browser callback.
-func (o *KiroOAuth) LoginWithBuilderIDAuthCode(ctx context.Context) (*KiroTokenData, error) {
+func (o *KiroOAuth) LoginWithBuilderIDAuthCode(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
 	ssoClient := NewSSOOIDCClient(o.cfg)
-	return ssoClient.LoginWithBuilderIDAuthCode(ctx)
+	return ssoClient.LoginWithBuilderIDAuthCode(ctx, noBrowser)
 }
 
 // exchangeCodeForToken exchanges the authorization code for tokens.
@@ -306,14 +306,14 @@ func (o *KiroOAuth) RefreshTokenWithFingerprint(ctx context.Context, refreshToke
 
 // LoginWithGoogle performs OAuth login with Google using Kiro's social auth.
 // This uses a custom protocol handler (kiro://) to receive the callback.
-func (o *KiroOAuth) LoginWithGoogle(ctx context.Context) (*KiroTokenData, error) {
+func (o *KiroOAuth) LoginWithGoogle(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
 	socialClient := NewSocialAuthClient(o.cfg)
-	return socialClient.LoginWithGoogle(ctx)
+	return socialClient.LoginWithGoogle(ctx, noBrowser)
 }
 
 // LoginWithGitHub performs OAuth login with GitHub using Kiro's social auth.
 // This uses a custom protocol handler (kiro://) to receive the callback.
-func (o *KiroOAuth) LoginWithGitHub(ctx context.Context) (*KiroTokenData, error) {
+func (o *KiroOAuth) LoginWithGitHub(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
 	socialClient := NewSocialAuthClient(o.cfg)
-	return socialClient.LoginWithGitHub(ctx)
+	return socialClient.LoginWithGitHub(ctx, noBrowser)
 }
