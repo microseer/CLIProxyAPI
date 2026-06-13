@@ -99,7 +99,7 @@ func startCallbackServer(ctx context.Context, expectedState string, cfg callback
 	}
 
 	port := listener.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://localhost:%d%s", port, cfg.CallbackPath)
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", port, cfg.CallbackPath)
 	resultCh := make(chan callbackResult, 1)
 
 	server := &http.Server{
@@ -147,12 +147,13 @@ func startCallbackServer(ctx context.Context, expectedState string, cfg callback
 		}
 	}()
 
-	// Auto-shutdown on context cancellation, timeout, or callback received.
+	// Auto-shutdown on context cancellation or timeout.
+	// NOTE: Do NOT read from resultCh here — it would race with the caller
+	// and consume the callback result before the caller can process it.
 	go func() {
 		select {
 		case <-ctx.Done():
 		case <-time.After(cfg.Timeout):
-		case <-resultCh:
 		}
 		_ = server.Shutdown(context.Background())
 	}()

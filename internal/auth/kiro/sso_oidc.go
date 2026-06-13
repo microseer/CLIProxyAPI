@@ -39,6 +39,7 @@ const (
 	pollInterval = 5 * time.Second
 
 	// Authorization code flow callback
+	authCodeCallbackPort = 19877
 	authCodeCallbackPath = "/oauth/callback"
 )
 
@@ -980,7 +981,7 @@ func (c *SSOOIDCClient) RegisterClientForAuthCodeWithIDC(ctx context.Context, re
 // startAuthCodeCallbackServer starts a local HTTP server for the auth code callback using the shared implementation.
 func (c *SSOOIDCClient) startAuthCodeCallbackServer(ctx context.Context, expectedState string) (string, <-chan callbackResult, error) {
 	return startCallbackServer(ctx, expectedState, callbackServerConfig{
-		DefaultPort:  0, // Dynamic port allocation
+		// DefaultPort:  authCodeCallbackPort,
 		CallbackPath: authCodeCallbackPath,
 		Timeout:      10 * time.Minute,
 		BindAddr:     "127.0.0.1",
@@ -1168,7 +1169,7 @@ func (c *SSOOIDCClient) LoginWithIDCAuthCode(ctx context.Context, startURL, regi
 	return c.LoginWithIDCAuthCodeProvider(ctx, startURL, region, normalizeIDCProvider("", startURL), noBrowser)
 }
 
-func (c *SSOOIDCClient) LoginWithIDCAuthCodeProvider(ctx context.Context, startURL, region, provider string, noBrowser bool) (*KiroTokenData, error) {
+func (c *SSOOIDCClient) LoginWithIDCAuthCodeProvider(ctx context.Context, startURL, region, provider string, noBrowser bool, onAuthURLReady ...func(string)) (*KiroTokenData, error) {
 	fmt.Println("\n╔══════════════════════════════════════════════════════════╗")
 	fmt.Println("║     Kiro Authentication (AWS IDC - Auth Code)             ║")
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
@@ -1219,6 +1220,11 @@ func (c *SSOOIDCClient) LoginWithIDCAuthCodeProvider(ctx context.Context, startU
 	}
 
 	_ = openBrowserURL(authURL, noBrowser)
+
+	// Notify caller of the auth URL (used by CLI flow for browser redirect).
+	if len(onAuthURLReady) > 0 && onAuthURLReady[0] != nil {
+		onAuthURLReady[0](authURL)
+	}
 
 	fmt.Println("\n  Waiting for authorization callback...")
 

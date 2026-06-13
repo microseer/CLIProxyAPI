@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -47,6 +48,7 @@ const (
 type KiroCLIOAuth struct {
 	httpClient *http.Client
 	cfg        *config.Config
+	noBrowser  bool // Set by LoginWithCLI for use by callback handler
 }
 
 type cliCallbackResult struct {
@@ -57,6 +59,7 @@ type cliCallbackResult struct {
 	IssuerURL   string
 	IDCRegion   string
 	RedirectURI string
+	TokenData   *KiroTokenData // Populated when login_option flow completes
 }
 
 type cliTokenExchangeRequest struct {
@@ -104,6 +107,7 @@ func (o *KiroCLIOAuth) startCallbackServer(ctx context.Context, expectedState st
 	}
 
 	resultCh := make(chan cliCallbackResult, 1)
+	var loginOptionHandled atomic.Bool
 	server := &http.Server{ReadHeaderTimeout: 10 * time.Second}
 	mux := http.NewServeMux()
 	callbackHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -120,21 +124,60 @@ func (o *KiroCLIOAuth) startCallbackServer(ctx context.Context, expectedState st
 		}
 
 		if state != expectedState {
+			// Silently reject invalid state requests without sending to resultCh.
+			// This prevents browser retries/prefetches from corrupting the login flow.
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, "<html><body><h1>State mismatch</h1><p>You can close this window.</p></body></html>")
-			resultCh <- cliCallbackResult{Err: "state mismatch"}
+			_, _ = io.WriteString(w, "<html><body><h1>Invalid request</h1><p>You can close this window.</p></body></html>")
 			return
 		}
 
 		if code == "" {
 			loginOption := strings.TrimSpace(r.URL.Query().Get("login_option"))
 			if loginOption != "" {
-				_, _ = io.WriteString(w, "<html><body><h1>Login option received</h1><p>You can close this window and continue in the terminal.</p></body></html>")
-				resultCh <- cliCallbackResult{
+				// Prevent duplicate login_option handling (browser retries).
+				if !loginOptionHandled.CompareAndSwap(false, true) {
+					_, _ = io.WriteString(w, "<html><body><h1>Authentication in progress</h1><p>Please wait...</p></body></html>")
+					return
+				}
+
+				cb := cliCallbackResult{
 					State:       state,
 					LoginOption: loginOption,
 					IssuerURL:   strings.TrimSpace(r.URL.Query().Get("issuer_url")),
 					IDCRegion:   strings.TrimSpace(r.URL.Query().Get("idc_region")),
+				}
+
+				// Start inner auth flow in background; capture OIDC URL for redirect.
+				authURLCh := make(chan string, 1)
+				go func() {
+					tokenData, err := o.handleLoginOption(ctx, cb, o.noBrowser, func(authURL string) {
+						select {
+						case authURLCh <- authURL:
+						default:
+						}
+					})
+					if err != nil {
+						resultCh <- cliCallbackResult{Err: err.Error()}
+						return
+					}
+					resultCh <- cliCallbackResult{TokenData: tokenData}
+				}()
+
+				// Wait for the inner auth URL, then redirect the browser.
+				select {
+				case authURL := <-authURLCh:
+					fmt.Fprintf(w, `<!DOCTYPE html>
+<html><head>
+<meta http-equiv="refresh" content="1;url=%s">
+<title>Redirecting to Authentication...</title>
+</head><body>
+<h1>Redirecting to authentication...</h1>
+<p>If you are not redirected automatically, <a href="%s">click here</a>.</p>
+</body></html>`, authURL, authURL)
+				case <-time.After(60 * time.Second):
+					w.WriteHeader(http.StatusGatewayTimeout)
+					_, _ = io.WriteString(w, "<html><body><h1>Timeout</h1><p>Failed to start authentication.</p></body></html>")
+					resultCh <- cliCallbackResult{Err: "timeout waiting for auth URL"}
 				}
 				return
 			}
@@ -283,7 +326,7 @@ func (o *KiroCLIOAuth) RefreshToken(ctx context.Context, refreshToken string) (*
 	}, nil
 }
 
-func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResult, noBrowser bool) (*KiroTokenData, error) {
+func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResult, noBrowser bool, onAuthURLReady ...func(string)) (*KiroTokenData, error) {
 	loginOption := strings.ToLower(strings.TrimSpace(cb.LoginOption))
 	region := strings.TrimSpace(cb.IDCRegion)
 	if region == "" {
@@ -293,13 +336,13 @@ func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResu
 	ssoClient := NewSSOOIDCClient(o.cfg)
 	switch loginOption {
 	case "builderid", "builder-id", "builder_id":
-		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, builderIDStartURL, region, "BuilderId", noBrowser)
+		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, builderIDStartURL, region, "BuilderId", noBrowser, onAuthURLReady...)
 	case "enterprise", "idc":
 		issuerURL := strings.TrimSpace(cb.IssuerURL)
 		if issuerURL == "" {
 			issuerURL = enterpriseStartURL
 		}
-		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, issuerURL, region, "Enterprise", noBrowser)
+		return ssoClient.LoginWithIDCAuthCodeProvider(ctx, issuerURL, region, "Enterprise", noBrowser, onAuthURLReady...)
 	case "google":
 		socialClient := NewSocialAuthClient(o.cfg)
 		return socialClient.LoginWithGoogle(ctx, noBrowser)
@@ -324,6 +367,7 @@ func (o *KiroCLIOAuth) LoginWithCLI(ctx context.Context, noBrowser bool) (*KiroT
 
 	callbackCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	o.noBrowser = noBrowser // Make available to callback handler for redirect flow
 	callbackResult, shutdown, err := o.startCallbackServer(callbackCtx, state)
 	if err != nil {
 		return nil, err
@@ -351,16 +395,14 @@ func (o *KiroCLIOAuth) LoginWithCLI(ctx context.Context, noBrowser bool) (*KiroT
 		if cb.Err != "" {
 			return nil, fmt.Errorf("oauth callback error: %s", cb.Err)
 		}
-		if cb.State != state {
-			return nil, fmt.Errorf("oauth state mismatch")
+
+		// Login option flow completed via redirect (token data from inner auth flow).
+		if cb.TokenData != nil {
+			return cb.TokenData, nil
 		}
 
-		if cb.LoginOption != "" {
-			tokenData, errLoginOption := o.handleLoginOption(ctx, cb, noBrowser)
-			if errLoginOption != nil {
-				return nil, errLoginOption
-			}
-			return tokenData, nil
+		if cb.State != state {
+			return nil, fmt.Errorf("oauth state mismatch")
 		}
 
 		tokenData, errExchange := o.exchangeCodeForToken(ctx, cb.Code, verifier, cb.RedirectURI)
