@@ -108,9 +108,34 @@ type Service struct {
 	homeClient       *home.Client
 	homeCancel       context.CancelFunc
 	homeLogForwarder *logging.HomeAppLogForwarder
+
+	// kiroModelCache deduplicates kiro dynamic model fetches and caches 403 failures.
+	kiroModelCache kiroModelFetchCache
 }
 
 const modelRegistrationMaxWorkersPerCategory = 5
+
+// kiroModelFetchCache deduplicates kiro dynamic model API calls and short-circuits
+// repeated 403 failures so that multiple auth files sharing the same provider do not
+// each trigger a separate failing HTTP request during startup.
+type kiroModelFetchCache struct {
+	mu sync.Mutex
+
+	// Cached dynamic models from the last successful fetch.
+	models []*ModelInfo
+	// Time of the last successful fetch.
+	fetchedAt time.Time
+	// Time of the last 403 (or similar auth) failure.
+	failedAt time.Time
+	// Whether the last failure was a 403 (bearer token invalid).
+	authFailed bool
+}
+
+// kiro model cache TTLs.
+const (
+	kiroModelCacheSuccessTTL = 30 * time.Second
+	kiroModelCacheFailureTTL = 60 * time.Second
+)
 
 const (
 	modelRegistrationPhaseConfigAPIKey = iota
@@ -1715,6 +1740,10 @@ func (s *Service) refreshKiroModels() {
 		return
 	}
 
+	// Invalidate the failure cache before periodic refresh so that auths whose
+	// tokens were refreshed by the auto-refresh conductor can retry the API.
+	s.invalidateKiroModelFailureCache()
+
 	auths := s.coreManager.List()
 	refreshed := 0
 	for _, item := range auths {
@@ -1994,6 +2023,12 @@ func (s *Service) refreshModelRegistrationForAuth(current *coreauth.Auth) bool {
 		return false
 	}
 
+	// When a kiro auth is re-registered (typically after a token refresh), clear
+	// the 403 failure cache so fetchKiroModels can retry the API with the new token.
+	if strings.EqualFold(strings.TrimSpace(current.Provider), "kiro") {
+		s.invalidateKiroModelFailureCache()
+	}
+
 	ctx := context.Background()
 	if !current.Disabled {
 		s.ensureExecutorsForAuth(current)
@@ -2182,6 +2217,23 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 		return registry.GetKiroModels()
 	}
 
+	// Check cache: return cached result if within TTL to avoid redundant API calls
+	// when multiple kiro auth files are processed in quick succession.
+	s.kiroModelCache.mu.Lock()
+	now := time.Now()
+	if s.kiroModelCache.authFailed && now.Sub(s.kiroModelCache.failedAt) < kiroModelCacheFailureTTL {
+		s.kiroModelCache.mu.Unlock()
+		log.Debug("kiro: skipping dynamic model fetch (403 failure cached), using static models")
+		return registry.GetKiroModels()
+	}
+	if s.kiroModelCache.models != nil && now.Sub(s.kiroModelCache.fetchedAt) < kiroModelCacheSuccessTTL {
+		cached := s.kiroModelCache.models
+		s.kiroModelCache.mu.Unlock()
+		log.Debugf("kiro: using cached dynamic models (%d models, cached %s ago)", len(cached), now.Sub(s.kiroModelCache.fetchedAt).Round(time.Second))
+		return cached
+	}
+	s.kiroModelCache.mu.Unlock()
+
 	kAuth := kiroauth.NewKiroAuth(s.cfg)
 	if kAuth == nil {
 		log.Warn("kiro: failed to create KiroAuth instance, using static models")
@@ -2193,7 +2245,17 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 
 	apiModels, err := kAuth.ListAvailableModels(ctx, tokenData)
 	if err != nil {
-		log.Warnf("kiro: failed to fetch dynamic models: %v, using static models", err)
+		// Check if this is a 403 auth failure - if so, cache the failure to
+		// short-circuit subsequent fetch attempts for other kiro auth files.
+		if isKiroAuthError(err) {
+			s.kiroModelCache.mu.Lock()
+			s.kiroModelCache.authFailed = true
+			s.kiroModelCache.failedAt = time.Now()
+			s.kiroModelCache.mu.Unlock()
+			log.Warnf("kiro: dynamic model fetch failed with auth error: %v, caching failure for %s, using static models", err, kiroModelCacheFailureTTL)
+		} else {
+			log.Warnf("kiro: failed to fetch dynamic models: %v, using static models", err)
+		}
 		return registry.GetKiroModels()
 	}
 
@@ -2205,8 +2267,41 @@ func (s *Service) fetchKiroModels(a *coreauth.Auth) []*ModelInfo {
 	apiModelInfos := toKiroAPIModels(apiModels)
 	models := registry.ConvertKiroAPIModels(apiModelInfos)
 
+	// Cache successful result.
+	s.kiroModelCache.mu.Lock()
+	s.kiroModelCache.models = models
+	s.kiroModelCache.fetchedAt = time.Now()
+	s.kiroModelCache.authFailed = false
+	s.kiroModelCache.mu.Unlock()
+
 	log.Infof("kiro: successfully fetched %d models from API", len(models))
 	return models
+}
+
+// isKiroAuthError returns true if the error indicates a 403 authentication failure
+// (e.g. invalid bearer token), which should be cached to avoid repeated failing requests.
+func isKiroAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "status 403") || strings.Contains(msg, "bearer token")
+}
+
+// invalidateKiroModelFailureCache clears the cached 403 failure state so that
+// subsequent fetchKiroModels calls will retry the API (e.g. after token refresh).
+func (s *Service) invalidateKiroModelFailureCache() {
+	if s == nil {
+		return
+	}
+	s.kiroModelCache.mu.Lock()
+	wasFailed := s.kiroModelCache.authFailed
+	s.kiroModelCache.authFailed = false
+	s.kiroModelCache.failedAt = time.Time{}
+	s.kiroModelCache.mu.Unlock()
+	if wasFailed {
+		log.Debug("kiro: invalidated model fetch failure cache, next fetch will retry API")
+	}
 }
 
 func (s *Service) extractKiroTokenData(a *coreauth.Auth) *kiroauth.KiroTokenData {
