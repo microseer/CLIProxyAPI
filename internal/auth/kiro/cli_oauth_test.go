@@ -121,25 +121,24 @@ func TestKiroCLICallbackServerAcceptsBuilderIDLoginOption(t *testing.T) {
 	}
 }
 
-func TestGenerateKiroCLIStateShape(t *testing.T) {
-	state, err := generateKiroCLIState()
+func TestGenerateOAuthStateShape(t *testing.T) {
+	state, err := generateOAuthState()
 	if err != nil {
-		t.Fatalf("generateKiroCLIState failed: %v", err)
+		t.Fatalf("generateOAuthState failed: %v", err)
 	}
-	if len(state) != 10 {
-		t.Fatalf("state length mismatch: got %d want 10", len(state))
+	if state == "" {
+		t.Fatalf("state must be non-empty")
 	}
-	for _, ch := range state {
-		if !(ch >= 'a' && ch <= 'z') && !(ch >= 'A' && ch <= 'Z') && !(ch >= '0' && ch <= '9') {
-			t.Fatalf("state has non-alnum character: %q", ch)
-		}
+	// base64url-encoded 16-byte random value should be ~22 chars
+	if len(state) < 16 {
+		t.Fatalf("state length too short: got %d", len(state))
 	}
 }
 
-func TestGenerateKiroCLIPKCEShape(t *testing.T) {
-	verifier, challenge, err := generateKiroCLIPKCE()
+func TestGeneratePKCEShape(t *testing.T) {
+	verifier, challenge, err := generatePKCE()
 	if err != nil {
-		t.Fatalf("generateKiroCLIPKCE failed: %v", err)
+		t.Fatalf("generatePKCE failed: %v", err)
 	}
 	if verifier == "" || challenge == "" {
 		t.Fatalf("verifier/challenge must be non-empty")

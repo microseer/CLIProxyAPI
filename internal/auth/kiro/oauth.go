@@ -3,16 +3,9 @@ package kiro
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html"
-	"io"
-	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -23,12 +16,6 @@ import (
 const (
 	// Kiro auth endpoint
 	kiroAuthEndpoint = "https://prod.us-east-1.auth.desktop.kiro.dev"
-
-	// Default callback port
-	defaultCallbackPort = 9876
-
-	// Auth timeout
-	authTimeout = 10 * time.Minute
 )
 
 // KiroTokenResponse represents the response from Kiro token endpoint.
@@ -62,106 +49,6 @@ func NewKiroOAuth(cfg *config.Config) *KiroOAuth {
 	}
 }
 
-// generateCodeVerifier generates a random code verifier for PKCE.
-func generateCodeVerifier() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// generateCodeChallenge generates the code challenge from verifier.
-func generateCodeChallenge(verifier string) string {
-	h := sha256.Sum256([]byte(verifier))
-	return base64.RawURLEncoding.EncodeToString(h[:])
-}
-
-// generateState generates a random state parameter.
-func generateState() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// AuthResult contains the authorization code and state from callback.
-type AuthResult struct {
-	Code  string
-	State string
-	Error string
-}
-
-// startCallbackServer starts a local HTTP server to receive the OAuth callback.
-func (o *KiroOAuth) startCallbackServer(ctx context.Context, expectedState string) (string, <-chan AuthResult, error) {
-	// Try to find an available port - use localhost like Kiro does
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", defaultCallbackPort))
-	if err != nil {
-		// Try with dynamic port (RFC 8252 allows dynamic ports for native apps)
-		log.Warnf("kiro oauth: default port %d is busy, falling back to dynamic port", defaultCallbackPort)
-		listener, err = net.Listen("tcp", "localhost:0")
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to start callback server: %w", err)
-		}
-	}
-
-	port := listener.Addr().(*net.TCPAddr).Port
-	// Use http scheme for local callback server
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth/callback", port)
-	resultChan := make(chan AuthResult, 1)
-
-	server := &http.Server{
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		state := r.URL.Query().Get("state")
-		errParam := r.URL.Query().Get("error")
-
-		if errParam != "" {
-			w.Header().Set("Content-Type", "text/html")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `<html><body><h1>Login Failed</h1><p>%s</p><p>You can close this window.</p></body></html>`, html.EscapeString(errParam))
-			resultChan <- AuthResult{Error: errParam}
-			return
-		}
-
-		if state != expectedState {
-			w.Header().Set("Content-Type", "text/html")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `<html><body><h1>Login Failed</h1><p>Invalid state parameter</p><p>You can close this window.</p></body></html>`)
-			resultChan <- AuthResult{Error: "state mismatch"}
-			return
-		}
-
-		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<html><body><h1>Login Successful!</h1><p>You can close this window and return to the terminal.</p></body></html>`)
-		resultChan <- AuthResult{Code: code, State: state}
-	})
-
-	server.Handler = mux
-
-	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Debugf("callback server error: %v", err)
-		}
-	}()
-
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-time.After(authTimeout):
-		case <-resultChan:
-		}
-		_ = server.Shutdown(context.Background())
-	}()
-
-	return redirectURI, resultChan, nil
-}
-
 // LoginWithBuilderID performs OAuth login with AWS Builder ID using device code flow.
 func (o *KiroOAuth) LoginWithBuilderID(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
 	ssoClient := NewSSOOIDCClient(o.cfg)
@@ -177,41 +64,24 @@ func (o *KiroOAuth) LoginWithBuilderIDAuthCode(ctx context.Context, noBrowser bo
 
 // exchangeCodeForToken exchanges the authorization code for tokens.
 func (o *KiroOAuth) exchangeCodeForToken(ctx context.Context, code, codeVerifier, redirectURI string) (*KiroTokenData, error) {
-	payload := map[string]string{
-		"code":          code,
-		"code_verifier": codeVerifier,
-		"redirect_uri":  redirectURI,
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
 	tokenURL := kiroAuthEndpoint + "/oauth/token"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID))
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-
-	resp, err := o.httpClient.Do(req)
+	respBody, statusCode, err := doJSONPost(ctx, o.httpClient, tokenURL,
+		map[string]string{
+			"code":          code,
+			"code_verifier": codeVerifier,
+			"redirect_uri":  redirectURI,
+		},
+		map[string]string{
+			"User-Agent": fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID),
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("token exchange failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token exchange failed (status %d)", resp.StatusCode)
+	if statusCode != http.StatusOK {
+		log.Debugf("token exchange failed (status %d): %s", statusCode, string(respBody))
+		return nil, fmt.Errorf("token exchange failed (status %d)", statusCode)
 	}
 
 	var tokenResp KiroTokenResponse
@@ -219,20 +89,12 @@ func (o *KiroOAuth) exchangeCodeForToken(ctx context.Context, code, codeVerifier
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	// Validate ExpiresIn - use default 1 hour if invalid
-	expiresIn := tokenResp.ExpiresIn
-	if expiresIn <= 0 {
-		expiresIn = 3600
-	}
-	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-
 	return &KiroTokenData{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAt.Format(time.RFC3339),
+		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
 		AuthMethod:   "social",
-		Provider:     "", // Caller should preserve original provider
 		Region:       "us-east-1",
 	}, nil
 }
@@ -246,39 +108,20 @@ func (o *KiroOAuth) RefreshToken(ctx context.Context, refreshToken string) (*Kir
 // RefreshTokenWithFingerprint refreshes an expired access token with a specific fingerprint.
 // tokenKey is used to generate a consistent fingerprint for the token.
 func (o *KiroOAuth) RefreshTokenWithFingerprint(ctx context.Context, refreshToken, tokenKey string) (*KiroTokenData, error) {
-	payload := map[string]string{
-		"refreshToken": refreshToken,
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
 	refreshURL := kiroAuthEndpoint + "/refreshToken"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID))
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-
-	resp, err := o.httpClient.Do(req)
+	respBody, statusCode, err := doJSONPost(ctx, o.httpClient, refreshURL,
+		map[string]string{"refreshToken": refreshToken},
+		map[string]string{
+			"User-Agent": fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID),
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("refresh request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
+	if statusCode != http.StatusOK {
+		log.Debugf("token refresh failed (status %d): %s", statusCode, string(respBody))
+		return nil, fmt.Errorf("token refresh failed (status %d): %s", statusCode, string(respBody))
 	}
 
 	var tokenResp KiroTokenResponse
@@ -286,20 +129,12 @@ func (o *KiroOAuth) RefreshTokenWithFingerprint(ctx context.Context, refreshToke
 		return nil, fmt.Errorf("failed to parse token response: %w", err)
 	}
 
-	// Validate ExpiresIn - use default 1 hour if invalid
-	expiresIn := tokenResp.ExpiresIn
-	if expiresIn <= 0 {
-		expiresIn = 3600
-	}
-	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-
 	return &KiroTokenData{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAt.Format(time.RFC3339),
+		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
 		AuthMethod:   "social",
-		Provider:     "", // Caller should preserve original provider
 		Region:       "us-east-1",
 	}, nil
 }

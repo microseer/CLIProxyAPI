@@ -4,17 +4,12 @@ package kiro
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"crypto/sha1"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -45,7 +40,6 @@ const (
 
 	// Authorization code flow callback
 	authCodeCallbackPath = "/oauth/callback"
-	authCodeCallbackPort = 19877
 )
 
 func (c *SSOOIDCClient) getOIDCEndpointOverride() config.OAuthEndpointConfig {
@@ -613,214 +607,23 @@ func (c *SSOOIDCClient) LoginWithIDCAndOptions(ctx context.Context, startURL, re
 	return c.LoginWithIDC(ctx, startURL, region, noBrowser)
 }
 
+// RegisterClient registers a new OIDC client with AWS using the default region.
 func (c *SSOOIDCClient) RegisterClient(ctx context.Context) (*RegisterClientResponse, error) {
-	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
-
-	payload := map[string]interface{}{
-		"clientName": "Kiro IDE",
-		"clientType": "public",
-		"scopes":     []string{"codewhisperer:completions", "codewhisperer:analysis", "codewhisperer:conversations", "codewhisperer:transformations", "codewhisperer:taskassist"},
-		"grantTypes": []string{"urn:ietf:params:oauth:grant-type:device_code", "refresh_token"},
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	SetOIDCHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("register client failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("register client failed (status %d)", resp.StatusCode)
-	}
-
-	var result RegisterClientResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
+	return c.RegisterClientWithRegion(ctx, defaultIDCRegion)
 }
 
 func (c *SSOOIDCClient) StartDeviceAuthorization(ctx context.Context, clientID, clientSecret string) (*StartDeviceAuthResponse, error) {
-	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
-
-	payload := map[string]string{
-		"clientId":     clientID,
-		"clientSecret": clientSecret,
-		"startUrl":     builderIDStartURL,
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/device_authorization", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	SetOIDCHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("start device auth failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("start device auth failed (status %d)", resp.StatusCode)
-	}
-
-	var result StartDeviceAuthResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
+	return c.StartDeviceAuthorizationWithIDC(ctx, clientID, clientSecret, builderIDStartURL, defaultIDCRegion)
 }
 
 // CreateToken polls for the access token after user authorization.
 func (c *SSOOIDCClient) CreateToken(ctx context.Context, clientID, clientSecret, deviceCode string) (*CreateTokenResponse, error) {
-	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
-
-	payload := map[string]string{
-		"clientId":     clientID,
-		"clientSecret": clientSecret,
-		"deviceCode":   deviceCode,
-		"grantType":    "urn:ietf:params:oauth:grant-type:device_code",
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	SetOIDCHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check for pending authorization
-	if resp.StatusCode == http.StatusBadRequest {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(respBody, &errResp) == nil {
-			if errResp.Error == "authorization_pending" {
-				return nil, ErrAuthorizationPending
-			}
-			if errResp.Error == "slow_down" {
-				return nil, ErrSlowDown
-			}
-		}
-		log.Debugf("create token failed: %s", string(respBody))
-		return nil, fmt.Errorf("create token failed")
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("create token failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("create token failed (status %d)", resp.StatusCode)
-	}
-
-	var result CreateTokenResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
+	return c.CreateTokenWithRegion(ctx, clientID, clientSecret, deviceCode, defaultIDCRegion)
 }
 
-// RefreshToken refreshes an access token using the refresh token.
-// Includes retry logic and improved error handling for better reliability.
+// RefreshToken refreshes an access token using the refresh token (default region).
 func (c *SSOOIDCClient) RefreshToken(ctx context.Context, clientID, clientSecret, refreshToken string) (*KiroTokenData, error) {
-	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
-
-	payload := map[string]string{
-		"clientId":     clientID,
-		"clientSecret": clientSecret,
-		"refreshToken": refreshToken,
-		"grantType":    "refresh_token",
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	SetOIDCHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Warnf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var result CreateTokenResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, err
-	}
-
-	expiresAt := time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
-
-	return &KiroTokenData{
-		AccessToken:  result.AccessToken,
-		RefreshToken: result.RefreshToken,
-		ExpiresAt:    expiresAt.Format(time.RFC3339),
-		AuthMethod:   "builder-id",
-		Provider:     "AWS",
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		Region:       defaultIDCRegion,
-	}, nil
+	return c.RefreshTokenWithRegion(ctx, clientID, clientSecret, refreshToken, defaultIDCRegion, "")
 }
 
 // LoginWithBuilderID performs the full device code flow for AWS Builder ID.
@@ -1122,52 +925,9 @@ func (c *SSOOIDCClient) tryListProfilesLegacy(ctx context.Context, accessToken s
 	return ""
 }
 
-// RegisterClientForAuthCode registers a new OIDC client for authorization code flow.
+// RegisterClientForAuthCode registers a new OIDC client for authorization code flow (default region).
 func (c *SSOOIDCClient) RegisterClientForAuthCode(ctx context.Context, redirectURI string) (*RegisterClientResponse, error) {
-	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
-
-	payload := map[string]interface{}{
-		"clientName":   "Kiro IDE",
-		"clientType":   "public",
-		"scopes":       []string{"codewhisperer:completions", "codewhisperer:analysis", "codewhisperer:conversations", "codewhisperer:transformations", "codewhisperer:taskassist"},
-		"grantTypes":   []string{"authorization_code", "refresh_token"},
-		"redirectUris": []string{redirectURI},
-		"issuerUrl":    builderIDStartURL,
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	SetOIDCHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("register client for auth code failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("register client failed (status %d)", resp.StatusCode)
-	}
-
-	var result RegisterClientResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
+	return c.RegisterClientForAuthCodeWithIDC(ctx, redirectURI, builderIDStartURL, defaultIDCRegion)
 }
 
 func (c *SSOOIDCClient) RegisterClientForAuthCodeWithIDC(ctx context.Context, redirectURI, issuerUrl, region string) (*RegisterClientResponse, error) {
@@ -1217,153 +977,29 @@ func (c *SSOOIDCClient) RegisterClientForAuthCodeWithIDC(ctx context.Context, re
 	return &result, nil
 }
 
-// AuthCodeCallbackResult contains the result from authorization code callback.
-type AuthCodeCallbackResult struct {
-	Code  string
-	State string
-	Error string
-}
-
-// startAuthCodeCallbackServer starts a local HTTP server to receive the authorization code callback.
-// Uses dynamic port allocation (aligned with Kiro Account Manager implementation).
-func (c *SSOOIDCClient) startAuthCodeCallbackServer(ctx context.Context, expectedState string) (string, <-chan AuthCodeCallbackResult, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to start callback server: %w", err)
-	}
-
-	port := listener.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", port, authCodeCallbackPath)
-	resultChan := make(chan AuthCodeCallbackResult, 1)
-	doneChan := make(chan struct{})
-
-	server := &http.Server{
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc(authCodeCallbackPath, func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		state := r.URL.Query().Get("state")
-		errParam := r.URL.Query().Get("error")
-
-		// Send response to browser
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if errParam != "" {
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `<!DOCTYPE html>
-<html><head><title>Login Failed</title></head>
-<body><h1>Login Failed</h1><p>Error: %s</p><p>You can close this window.</p></body></html>`, html.EscapeString(errParam))
-			resultChan <- AuthCodeCallbackResult{Error: errParam}
-			close(doneChan)
-			return
-		}
-
-		if state != expectedState {
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><title>Login Failed</title></head>
-<body><h1>Login Failed</h1><p>Invalid state parameter</p><p>You can close this window.</p></body></html>`)
-			resultChan <- AuthCodeCallbackResult{Error: "state mismatch"}
-			close(doneChan)
-			return
-		}
-
-		fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><title>Login Successful</title></head>
-<body><h1>Login Successful!</h1><p>You can close this window and return to the terminal.</p>
-<script>window.close();</script></body></html>`)
-		resultChan <- AuthCodeCallbackResult{Code: code, State: state}
-		close(doneChan)
+// startAuthCodeCallbackServer starts a local HTTP server for the auth code callback using the shared implementation.
+func (c *SSOOIDCClient) startAuthCodeCallbackServer(ctx context.Context, expectedState string) (string, <-chan callbackResult, error) {
+	return startCallbackServer(ctx, expectedState, callbackServerConfig{
+		DefaultPort:  0, // Dynamic port allocation
+		CallbackPath: authCodeCallbackPath,
+		Timeout:      10 * time.Minute,
+		BindAddr:     "127.0.0.1",
 	})
-
-	server.Handler = mux
-
-	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Debugf("auth code callback server error: %v", err)
-		}
-	}()
-
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-time.After(10 * time.Minute):
-		case <-doneChan:
-		}
-		_ = server.Shutdown(context.Background())
-	}()
-
-	return redirectURI, resultChan, nil
 }
 
-// generatePKCEForAuthCode generates PKCE code verifier and challenge for authorization code flow.
+// generatePKCEForAuthCode generates PKCE for authorization code flow (delegates to shared implementation).
 func generatePKCEForAuthCode() (verifier, challenge string, err error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-	verifier = base64.RawURLEncoding.EncodeToString(b)
-	h := sha256.Sum256([]byte(verifier))
-	challenge = base64.RawURLEncoding.EncodeToString(h[:])
-	return verifier, challenge, nil
+	return generatePKCE()
 }
 
-// generateStateForAuthCode generates a random state parameter.
+// generateStateForAuthCode generates a random state for authorization code flow (delegates to shared implementation).
 func generateStateForAuthCode() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
+	return generateOAuthState()
 }
 
-// CreateTokenWithAuthCode exchanges authorization code for tokens.
+// CreateTokenWithAuthCode exchanges authorization code for tokens (default region).
 func (c *SSOOIDCClient) CreateTokenWithAuthCode(ctx context.Context, clientID, clientSecret, code, codeVerifier, redirectURI string) (*CreateTokenResponse, error) {
-	endpoint := c.getOIDCEndpointWithOverride(defaultIDCRegion)
-
-	payload := map[string]string{
-		"clientId":     clientID,
-		"clientSecret": clientSecret,
-		"code":         code,
-		"codeVerifier": codeVerifier,
-		"redirectUri":  redirectURI,
-		"grantType":    "authorization_code",
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	SetOIDCHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("create token with auth code failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("create token failed (status %d)", resp.StatusCode)
-	}
-
-	var result CreateTokenResponse
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, err
-	}
-
-	return &result, nil
+	return c.CreateTokenWithAuthCodeAndRegion(ctx, clientID, clientSecret, code, codeVerifier, redirectURI, defaultIDCRegion)
 }
 
 func (c *SSOOIDCClient) CreateTokenWithAuthCodeAndRegion(ctx context.Context, clientID, clientSecret, code, codeVerifier, redirectURI, region string) (*CreateTokenResponse, error) {

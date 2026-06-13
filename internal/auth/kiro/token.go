@@ -58,21 +58,6 @@ func (s *KiroTokenStorage) SaveTokenToFile(authFilePath string) error {
 	return nil
 }
 
-// LoadFromFile loads token storage from the specified file path.
-func LoadFromFile(authFilePath string) (*KiroTokenStorage, error) {
-	data, err := os.ReadFile(authFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token file: %w", err)
-	}
-
-	var storage KiroTokenStorage
-	if err := json.Unmarshal(data, &storage); err != nil {
-		return nil, fmt.Errorf("failed to parse token file: %w", err)
-	}
-
-	return &storage, nil
-}
-
 // ToTokenData converts storage to KiroTokenData for API use.
 func (s *KiroTokenStorage) ToTokenData() *KiroTokenData {
 	return &KiroTokenData{

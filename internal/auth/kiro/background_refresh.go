@@ -3,12 +3,12 @@ package kiro
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -61,8 +61,8 @@ type BackgroundRefresher struct {
 	oauth            *KiroOAuth
 	cliOAuth         *KiroCLIOAuth
 	ssoClient        *SSOOIDCClient
-	callbackMu       sync.RWMutex                                   // 保护回调函数的并发访问
-	onTokenRefreshed func(tokenID string, tokenData *KiroTokenData) // 刷新成功回调
+	callbackMu       sync.RWMutex                                   // Protect callback function for concurrent access
+	onTokenRefreshed func(tokenID string, tokenData *KiroTokenData) // Callback invoked on successful token refresh
 }
 
 func NewBackgroundRefresher(repo TokenRepository, opts ...RefresherOption) *BackgroundRefresher {
@@ -72,8 +72,8 @@ func NewBackgroundRefresher(repo TokenRepository, opts ...RefresherOption) *Back
 		concurrency: 10,
 		tokenRepo:   repo,
 		stopCh:      make(chan struct{}),
-		oauth:       nil, // Lazy init - will be set when config available
-		ssoClient:   nil, // Lazy init - will be set when config available
+		oauth:       nil, // Lazy init - set when config available
+		ssoClient:   nil, // Lazy init - set when config available
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -212,15 +212,15 @@ func (r *BackgroundRefresher) refreshSingle(ctx context.Context, token *Token) {
 	)
 
 	if result.Error != nil {
-		log.Printf("failed to refresh token %s: %v", token.ID, result.Error)
+		log.Errorf("failed to refresh token %s: %v", token.ID, result.Error)
 		return
 	}
 
 	newTokenData := result.TokenData
 	if result.UsedFallback {
-		log.Printf("token %s: using existing token as fallback (refresh failed but token still valid)", token.ID)
-		// Don't update the token file if we're using fallback
-		// Just update LastVerified to prevent immediate re-check
+		log.Warnf("token %s: using existing token as fallback (refresh failed but token still valid)", token.ID)
+		// Don't update the token file when using fallback.
+		// Just update LastVerified to prevent immediate re-check.
 		token.LastVerified = time.Now()
 		return
 	}
@@ -238,24 +238,24 @@ func (r *BackgroundRefresher) refreshSingle(ctx context.Context, token *Token) {
 	}
 
 	if err := r.tokenRepo.UpdateToken(token); err != nil {
-		log.Printf("failed to update token %s: %v", token.ID, err)
+		log.Errorf("failed to update token %s: %v", token.ID, err)
 		return
 	}
 
-	// 方案 A: 刷新成功后触发回调，通知 Watcher 更新内存中的 Auth 对象
+	// Plan A: Invoke callback on successful refresh to notify Watcher of updated Auth object.
 	r.callbackMu.RLock()
 	callback := r.onTokenRefreshed
 	r.callbackMu.RUnlock()
 
 	if callback != nil {
-		// 使用 defer recover 隔离回调 panic，防止崩溃整个进程
+		// Isolate callback panic with defer recover to prevent crashing the entire process.
 		func() {
 			defer func() {
 				if rec := recover(); rec != nil {
-					log.Printf("background refresh: callback panic for token %s: %v", token.ID, rec)
+					log.Errorf("background refresh: callback panic for token %s: %v", token.ID, rec)
 				}
 			}()
-			log.Printf("background refresh: notifying token refresh callback for %s", token.ID)
+			log.Debugf("background refresh: notifying token refresh callback for %s", token.ID)
 			callback(token.ID, newTokenData)
 		}()
 	}

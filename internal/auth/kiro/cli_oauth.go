@@ -3,9 +3,7 @@ package kiro
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -97,33 +95,6 @@ func NewKiroCLIOAuth(cfg *config.Config) *KiroCLIOAuth {
 
 func buildKiroCLISignInURL(state, challenge string) string {
 	return fmt.Sprintf(kiroCLISignInURLTemplate, state, challenge)
-}
-
-func generateKiroCLIState() (string, error) {
-	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	const stateLen = 10
-
-	b := make([]byte, stateLen)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate state bytes: %w", err)
-	}
-
-	out := make([]byte, stateLen)
-	for i := range b {
-		out[i] = alphabet[int(b[i])%len(alphabet)]
-	}
-	return string(out), nil
-}
-
-func generateKiroCLIPKCE() (verifier, challenge string, err error) {
-	b := make([]byte, 32)
-	if _, err = rand.Read(b); err != nil {
-		return "", "", fmt.Errorf("failed to generate verifier bytes: %w", err)
-	}
-	verifier = base64.RawURLEncoding.EncodeToString(b)
-	h := sha256.Sum256([]byte(verifier))
-	challenge = base64.RawURLEncoding.EncodeToString(h[:])
-	return verifier, challenge, nil
 }
 
 func (o *KiroCLIOAuth) startCallbackServer(ctx context.Context, expectedState string) (<-chan cliCallbackResult, func(context.Context) error, error) {
@@ -254,16 +225,11 @@ func (o *KiroCLIOAuth) exchangeCodeForToken(ctx context.Context, code, verifier,
 		return nil, fmt.Errorf("failed to parse token exchange response: %w", err)
 	}
 
-	expiresIn := tokenResp.ExpiresIn
-	if expiresIn <= 0 {
-		expiresIn = 3600
-	}
-
 	return &KiroTokenData{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339),
+		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
 		AuthMethod:   "kiro-cli",
 		Provider:     "Google",
 		Region:       "us-east-1",
@@ -305,16 +271,11 @@ func (o *KiroCLIOAuth) RefreshToken(ctx context.Context, refreshToken string) (*
 		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
 	}
 
-	expiresIn := tokenResp.ExpiresIn
-	if expiresIn <= 0 {
-		expiresIn = 3600
-	}
-
 	return &KiroTokenData{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339),
+		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
 		AuthMethod:   "kiro-cli",
 		Provider:     "Google",
 		Region:       "us-east-1",
@@ -351,12 +312,12 @@ func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResu
 }
 
 func (o *KiroCLIOAuth) LoginWithCLI(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
-	state, err := generateKiroCLIState()
+	state, err := generateOAuthState()
 	if err != nil {
 		return nil, err
 	}
 
-	verifier, challenge, err := generateKiroCLIPKCE()
+	verifier, challenge, err := generatePKCE()
 	if err != nil {
 		return nil, err
 	}

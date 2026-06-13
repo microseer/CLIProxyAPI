@@ -4,14 +4,8 @@ package kiro
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"html"
-	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,9 +27,6 @@ const (
 
 	// OAuth timeout
 	socialAuthTimeout = 10 * time.Minute
-
-	// Default callback port for social auth HTTP server
-	socialAuthCallbackPort = 9876
 )
 
 // SocialProvider represents the social login provider.
@@ -72,13 +63,6 @@ type RefreshTokenRequest struct {
 	RefreshToken string `json:"refreshToken"`
 }
 
-// WebCallbackResult contains the OAuth callback result from HTTP server.
-type WebCallbackResult struct {
-	Code  string
-	State string
-	Error string
-}
-
 // SocialAuthClient handles social authentication with Kiro.
 type SocialAuthClient struct {
 	httpClient      *http.Client
@@ -104,108 +88,6 @@ func NewSocialAuthClient(cfg *config.Config) *SocialAuthClient {
 	}
 }
 
-// startWebCallbackServer starts a local HTTP server to receive the OAuth callback.
-// This is used instead of the kiro:// protocol handler to avoid redirect_mismatch errors.
-func (c *SocialAuthClient) startWebCallbackServer(ctx context.Context, expectedState string) (string, <-chan WebCallbackResult, error) {
-	// Try to find an available port - use localhost like Kiro does
-	listener, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", socialAuthCallbackPort))
-	if err != nil {
-		// Try with dynamic port (RFC 8252 allows dynamic ports for native apps)
-		log.Warnf("kiro social auth: default port %d is busy, falling back to dynamic port", socialAuthCallbackPort)
-		listener, err = net.Listen("tcp", "localhost:0")
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to start callback server: %w", err)
-		}
-	}
-
-	port := listener.Addr().(*net.TCPAddr).Port
-	// Use http scheme for local callback server
-	redirectURI := fmt.Sprintf("http://localhost:%d/oauth/callback", port)
-	resultChan := make(chan WebCallbackResult, 1)
-
-	server := &http.Server{
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
-		code := r.URL.Query().Get("code")
-		state := r.URL.Query().Get("state")
-		errParam := r.URL.Query().Get("error")
-
-		if errParam != "" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `<!DOCTYPE html>
-<html><head><title>Login Failed</title></head>
-<body><h1>Login Failed</h1><p>%s</p><p>You can close this window.</p></body></html>`, html.EscapeString(errParam))
-			resultChan <- WebCallbackResult{Error: errParam}
-			return
-		}
-
-		if state != expectedState {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><title>Login Failed</title></head>
-<body><h1>Login Failed</h1><p>Invalid state parameter</p><p>You can close this window.</p></body></html>`)
-			resultChan <- WebCallbackResult{Error: "state mismatch"}
-			return
-		}
-
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><title>Login Successful</title></head>
-<body><h1>Login Successful!</h1><p>You can close this window and return to the terminal.</p>
-<script>window.close();</script></body></html>`)
-		resultChan <- WebCallbackResult{Code: code, State: state}
-	})
-
-	server.Handler = mux
-
-	go func() {
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Debugf("kiro social auth callback server error: %v", err)
-		}
-	}()
-
-	go func() {
-		select {
-		case <-ctx.Done():
-		case <-time.After(socialAuthTimeout):
-		case <-resultChan:
-		}
-		_ = server.Shutdown(context.Background())
-	}()
-
-	return redirectURI, resultChan, nil
-}
-
-// generatePKCE generates PKCE code verifier and challenge.
-func generatePKCE() (verifier, challenge string, err error) {
-	// Generate 32 bytes of random data for verifier
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", "", fmt.Errorf("failed to generate random bytes: %w", err)
-	}
-	verifier = base64.RawURLEncoding.EncodeToString(b)
-
-	// Generate SHA256 hash of verifier for challenge
-	h := sha256.Sum256([]byte(verifier))
-	challenge = base64.RawURLEncoding.EncodeToString(h[:])
-
-	return verifier, challenge, nil
-}
-
-// generateState generates a random state parameter.
-func generateStateParam() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
 // buildLoginURL constructs the Kiro OAuth login URL.
 // The login endpoint expects a GET request with query parameters.
 // Format: /login?idp=Google&redirect_uri=...&code_challenge=...&code_challenge_method=S256&state=...&prompt=select_account
@@ -222,35 +104,19 @@ func (c *SocialAuthClient) buildLoginURL(provider, redirectURI, codeChallenge, s
 
 // CreateToken exchanges the authorization code for tokens.
 func (c *SocialAuthClient) CreateToken(ctx context.Context, req *CreateTokenRequest) (*SocialTokenResponse, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal token request: %w", err)
-	}
-
 	tokenURL := kiroAuthServiceEndpoint + "/oauth/token"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", fmt.Sprintf("KiroIDE-%s-%s", c.kiroVersion, c.machineID))
-	httpReq.Header.Set("Accept", "application/json, text/plain, */*")
-
-	resp, err := c.httpClient.Do(httpReq)
+	respBody, statusCode, err := doJSONPost(ctx, c.httpClient, tokenURL, req,
+		map[string]string{
+			"User-Agent": fmt.Sprintf("KiroIDE-%s-%s", c.kiroVersion, c.machineID),
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("token request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("token exchange failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token exchange failed (status %d)", resp.StatusCode)
+	if statusCode != http.StatusOK {
+		log.Debugf("token exchange failed (status %d): %s", statusCode, string(respBody))
+		return nil, fmt.Errorf("token exchange failed (status %d)", statusCode)
 	}
 
 	var tokenResp SocialTokenResponse
@@ -263,35 +129,20 @@ func (c *SocialAuthClient) CreateToken(ctx context.Context, req *CreateTokenRequ
 
 // RefreshSocialToken refreshes an expired social auth token.
 func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken string) (*KiroTokenData, error) {
-	body, err := json.Marshal(&RefreshTokenRequest{RefreshToken: refreshToken})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal refresh request: %w", err)
-	}
-
 	refreshURL := kiroAuthServiceEndpoint + "/refreshToken"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, refreshURL, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create refresh request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", fmt.Sprintf("KiroIDE-%s-%s", c.kiroVersion, c.machineID))
-	httpReq.Header.Set("Accept", "application/json, text/plain, */*")
-
-	resp, err := c.httpClient.Do(httpReq)
+	respBody, statusCode, err := doJSONPost(ctx, c.httpClient, refreshURL,
+		&RefreshTokenRequest{RefreshToken: refreshToken},
+		map[string]string{
+			"User-Agent": fmt.Sprintf("KiroIDE-%s-%s", c.kiroVersion, c.machineID),
+		},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("refresh request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read refresh response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		log.Debugf("token refresh failed (status %d): %s", resp.StatusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d)", resp.StatusCode)
+	if statusCode != http.StatusOK {
+		log.Debugf("token refresh failed (status %d): %s", statusCode, string(respBody))
+		return nil, fmt.Errorf("token refresh failed (status %d)", statusCode)
 	}
 
 	var tokenResp SocialTokenResponse
@@ -299,20 +150,12 @@ func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken 
 		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
 	}
 
-	// Validate ExpiresIn - use default 1 hour if invalid
-	expiresIn := tokenResp.ExpiresIn
-	if expiresIn <= 0 {
-		expiresIn = 3600 // Default 1 hour
-	}
-	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
-
 	return &KiroTokenData{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAt.Format(time.RFC3339),
+		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
 		AuthMethod:   "social",
-		Provider:     "", // Caller should preserve original provider
 		Region:       "us-east-1",
 	}, nil
 }
@@ -351,7 +194,7 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 		return nil, fmt.Errorf("failed to generate PKCE: %w", err)
 	}
 
-	state, err := generateStateParam()
+	state, err := generateOAuthState()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate state: %w", err)
 	}
