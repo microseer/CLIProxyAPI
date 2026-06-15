@@ -19,8 +19,7 @@ import (
 )
 
 const (
-	pathGetUsageLimits      = "getUsageLimits"
-	pathListAvailableModels = "ListAvailableModels"
+	pathGetUsageLimits = "getUsageLimits"
 )
 
 // KiroAuth handles AWS CodeWhisperer authentication and API communication.
@@ -196,63 +195,6 @@ func (k *KiroAuth) GetUsageLimits(ctx context.Context, tokenData *KiroTokenData)
 	}
 
 	return usage, nil
-}
-
-// ListAvailableModels retrieves available models from the CodeWhisperer API.
-// This method fetches the list of AI models available for the authenticated user.
-//
-// Parameters:
-//   - ctx: The context for the request
-//   - tokenData: The token data containing access token and profile ARN
-//
-// Returns:
-//   - []*KiroModel: The list of available models
-//   - error: An error if the request fails
-func (k *KiroAuth) ListAvailableModels(ctx context.Context, tokenData *KiroTokenData) ([]*KiroModel, error) {
-	queryParams := map[string]string{
-		"origin":     OriginForAuthMethod(tokenData.AuthMethod),
-		"profileArn": tokenData.ProfileArn,
-	}
-
-	body, err := k.makeRequest(ctx, pathListAvailableModels, tokenData, queryParams)
-	if err != nil {
-		return nil, err
-	}
-
-	var result struct {
-		Models []struct {
-			ModelID        string  `json:"modelId"`
-			ModelName      string  `json:"modelName"`
-			Description    string  `json:"description"`
-			RateMultiplier float64 `json:"rateMultiplier"`
-			RateUnit       string  `json:"rateUnit"`
-			TokenLimits    *struct {
-				MaxInputTokens int `json:"maxInputTokens"`
-			} `json:"tokenLimits"`
-		} `json:"models"`
-	}
-
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse models response: %w", err)
-	}
-
-	models := make([]*KiroModel, 0, len(result.Models))
-	for _, m := range result.Models {
-		maxInputTokens := 0
-		if m.TokenLimits != nil {
-			maxInputTokens = m.TokenLimits.MaxInputTokens
-		}
-		models = append(models, &KiroModel{
-			ModelID:        m.ModelID,
-			ModelName:      m.ModelName,
-			Description:    m.Description,
-			RateMultiplier: m.RateMultiplier,
-			RateUnit:       m.RateUnit,
-			MaxInputTokens: maxInputTokens,
-		})
-	}
-
-	return models, nil
 }
 
 // CreateTokenStorage creates a new KiroTokenStorage from token data.

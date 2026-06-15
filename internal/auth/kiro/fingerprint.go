@@ -53,7 +53,7 @@ var (
 		"3.980.0", "3.975.0", "3.972.0", "3.808.0",
 		"3.738.0", "3.737.0", "3.736.0", "3.735.0",
 	}
-	// SDKVersions for getUsageLimits/ListAvailableModels/GetProfile (runtime API)
+	// SDKVersions for getUsageLimits/GetProfile (runtime API)
 	runtimeSDKVersions = []string{"1.0.0"}
 	// SDKVersions for generateAssistantResponse (streaming API)
 	streamingSDKVersions = []string{"1.0.27"}

@@ -155,7 +155,6 @@ type Config struct {
 
 	// OAuthEndpointOverrides allows per-provider OAuth endpoint URL overrides.
 	OAuthEndpointOverrides map[string]OAuthEndpointConfig `yaml:"oauth-endpoint-overrides,omitempty" json:"oauth-endpoint-overrides,omitempty"`
-
 }
 
 // PluginsConfig holds dynamic plugin system settings.

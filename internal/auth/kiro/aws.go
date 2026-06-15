@@ -71,22 +71,6 @@ type KiroUsageInfo struct {
 	NextReset string `json:"next_reset"`
 }
 
-// KiroModel represents a model available through the CodeWhisperer API
-type KiroModel struct {
-	// ModelID is the unique identifier for the model
-	ModelID string `json:"modelId"`
-	// ModelName is the human-readable name
-	ModelName string `json:"modelName"`
-	// Description is the model description
-	Description string `json:"description"`
-	// RateMultiplier is the credit multiplier for this model
-	RateMultiplier float64 `json:"rateMultiplier"`
-	// RateUnit is the unit for rate calculation (e.g., "credit")
-	RateUnit string `json:"rateUnit"`
-	// MaxInputTokens is the maximum input token limit
-	MaxInputTokens int `json:"maxInputTokens,omitempty"`
-}
-
 // KiroIDETokenFile is the default path to Kiro IDE's token file
 const KiroIDETokenFile = ".aws/sso/cache/kiro-auth-token.json"
 
