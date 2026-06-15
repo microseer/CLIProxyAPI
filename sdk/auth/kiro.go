@@ -277,8 +277,9 @@ func (a *KiroAuthenticator) Refresh(ctx context.Context, cfg *config.Config, aut
 		tokenData, err = ssoClient.RefreshToken(ctx, clientID, clientSecret, refreshToken)
 	case kiroauth.IsKiroCLIAuthMethod(authMethod):
 		// Native kiro-cli OAuth refresh path with Kiro-CLI User-Agent
+		provider, _ := auth.Metadata["provider"].(string)
 		oauth := kiroauth.NewKiroCLIOAuth(cfg)
-		tokenData, err = oauth.RefreshToken(ctx, refreshToken)
+		tokenData, err = oauth.RefreshToken(ctx, refreshToken, provider)
 	default:
 		// Fallback to Kiro's refresh endpoint (for social auth: Google/GitHub)
 		oauth := kiroauth.NewKiroOAuth(cfg)

@@ -3716,7 +3716,7 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	var refreshToken string
 	var clientID, clientSecret string
 	var authMethod string
-	var region, startURL string
+	var region, startURL, provider string
 
 	if auth.Metadata != nil {
 		if rt, ok := auth.Metadata["refresh_token"].(string); ok {
@@ -3736,6 +3736,9 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		}
 		if su, ok := auth.Metadata["start_url"].(string); ok {
 			startURL = su
+		}
+		if p, ok := auth.Metadata["provider"].(string); ok {
+			provider = p
 		}
 	}
 
@@ -3762,7 +3765,7 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		// Native kiro-cli OAuth refresh path with Kiro-CLI User-Agent
 		log.Debugf("kiro executor: using native Kiro CLI refresh endpoint")
 		oauth := kiroauth.NewKiroCLIOAuth(e.cfg)
-		tokenData, err = oauth.RefreshToken(ctx, refreshToken)
+		tokenData, err = oauth.RefreshToken(ctx, refreshToken, provider)
 	default:
 		// Fallback to Kiro's OAuth refresh endpoint (for social auth: Google/GitHub)
 		log.Debugf("kiro executor: using Kiro OAuth refresh endpoint")

@@ -596,7 +596,9 @@ func main() {
 		cmd.DoXAILogin(cfg, options)
 	} else if kiroCLILogin {
 		kiro.InitFingerprintConfig(cfg)
-		cmd.DoKiroCLILogin(cfg, options)
+		if err := cmd.DoKiroCLILogin(cfg, options); err != nil {
+			log.Errorf("Kiro CLI login failed: %v", err)
+		}
 	} else if codeBuddyLogin {
 		cmd.DoCodeBuddyLogin(cfg, options)
 	} else if codeBuddyIntlLogin {

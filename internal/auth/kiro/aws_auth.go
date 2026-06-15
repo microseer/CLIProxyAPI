@@ -265,19 +265,22 @@ func (k *KiroAuth) ListAvailableModels(ctx context.Context, tokenData *KiroToken
 //   - *KiroTokenStorage: A new token storage instance
 func (k *KiroAuth) CreateTokenStorage(tokenData *KiroTokenData) *KiroTokenStorage {
 	return &KiroTokenStorage{
-		AccessToken:  tokenData.AccessToken,
-		RefreshToken: tokenData.RefreshToken,
-		ProfileArn:   tokenData.ProfileArn,
-		ExpiresAt:    tokenData.ExpiresAt,
-		AuthMethod:   tokenData.AuthMethod,
-		Provider:     tokenData.Provider,
-		LastRefresh:  time.Now().Format(time.RFC3339),
-		ClientID:     tokenData.ClientID,
-		ClientSecret: tokenData.ClientSecret,
-		ClientIDHash: tokenData.ClientIDHash,
-		Region:       tokenData.Region,
-		StartURL:     tokenData.StartURL,
-		Email:        tokenData.Email,
+		Type:        "kiro",
+		LastRefresh: time.Now().Format(time.RFC3339),
+		KiroTokenData: &KiroTokenData{
+			AccessToken:  tokenData.AccessToken,
+			RefreshToken: tokenData.RefreshToken,
+			ProfileArn:   tokenData.ProfileArn,
+			ExpiresAt:    tokenData.ExpiresAt,
+			AuthMethod:   tokenData.AuthMethod,
+			Provider:     tokenData.Provider,
+			ClientID:     tokenData.ClientID,
+			ClientSecret: tokenData.ClientSecret,
+			ClientIDHash: tokenData.ClientIDHash,
+			Region:       tokenData.Region,
+			StartURL:     tokenData.StartURL,
+			Email:        tokenData.Email,
+		},
 	}
 }
 
@@ -302,6 +305,10 @@ func (k *KiroAuth) ValidateToken(ctx context.Context, tokenData *KiroTokenData) 
 //   - storage: The existing token storage to update
 //   - tokenData: The new token data to apply
 func (k *KiroAuth) UpdateTokenStorage(storage *KiroTokenStorage, tokenData *KiroTokenData) {
+	// Ensure the embedded KiroTokenData is initialized
+	if storage.KiroTokenData == nil {
+		storage.KiroTokenData = &KiroTokenData{}
+	}
 	storage.AccessToken = tokenData.AccessToken
 	storage.RefreshToken = tokenData.RefreshToken
 	storage.ProfileArn = tokenData.ProfileArn

@@ -33,7 +33,7 @@ func TestKiroCLICallbackServerAcceptsRootCallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	resultCh, shutdown, err := o.startCallbackServer(ctx, "state-1")
+	resultCh, shutdown, err := o.startCallbackServer(ctx, "state-1", false)
 	if err != nil {
 		t.Fatalf("startCallbackServer failed: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestKiroCLICallbackServerPreservesGoogleCallbackRedirectURI(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	resultCh, shutdown, err := o.startCallbackServer(ctx, "state-google")
+	resultCh, shutdown, err := o.startCallbackServer(ctx, "state-google", false)
 	if err != nil {
 		t.Fatalf("startCallbackServer failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestKiroCLICallbackServerAcceptsBuilderIDLoginOption(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	resultCh, shutdown, err := o.startCallbackServer(ctx, "state-2")
+	resultCh, shutdown, err := o.startCallbackServer(ctx, "state-2", false)
 	if err != nil {
 		t.Fatalf("startCallbackServer failed: %v", err)
 	}

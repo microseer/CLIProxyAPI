@@ -1,6 +1,7 @@
 package kiro
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -48,7 +49,6 @@ const (
 type KiroCLIOAuth struct {
 	httpClient *http.Client
 	cfg        *config.Config
-	noBrowser  bool // Set by LoginWithCLI for use by callback handler
 }
 
 type cliCallbackResult struct {
@@ -60,12 +60,6 @@ type cliCallbackResult struct {
 	IDCRegion   string
 	RedirectURI string
 	TokenData   *KiroTokenData // Populated when login_option flow completes
-}
-
-type cliTokenExchangeRequest struct {
-	Code         string `json:"code"`
-	CodeVerifier string `json:"code_verifier"`
-	RedirectURI  string `json:"redirect_uri"`
 }
 
 type cognitoGetIDResponse struct {
@@ -100,7 +94,17 @@ func buildKiroCLISignInURL(state, challenge string) string {
 	return fmt.Sprintf(kiroCLISignInURLTemplate, state, challenge)
 }
 
-func (o *KiroCLIOAuth) startCallbackServer(ctx context.Context, expectedState string) (<-chan cliCallbackResult, func(context.Context) error, error) {
+// capitalizeProvider capitalizes the first letter of a provider string
+// (e.g., "google" -> "Google", "github" -> "GitHub").
+func capitalizeProvider(provider string) string {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return ""
+	}
+	return strings.ToUpper(provider[:1]) + provider[1:]
+}
+
+func (o *KiroCLIOAuth) startCallbackServer(ctx context.Context, expectedState string, noBrowser bool) (<-chan cliCallbackResult, func(context.Context) error, error) {
 	listener, err := net.Listen("tcp", kiroCLICallbackAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to bind callback listener on %s: %w", kiroCLICallbackAddr, err)
@@ -150,7 +154,7 @@ func (o *KiroCLIOAuth) startCallbackServer(ctx context.Context, expectedState st
 				// Start inner auth flow in background; capture OIDC URL for redirect.
 				authURLCh := make(chan string, 1)
 				go func() {
-					tokenData, err := o.handleLoginOption(ctx, cb, o.noBrowser, func(authURL string) {
+					tokenData, err := o.handleLoginOption(ctx, cb, noBrowser, func(authURL string) {
 						select {
 						case authURLCh <- authURL:
 						default:
@@ -226,104 +230,22 @@ func buildKiroCLICallbackRedirectURI(r *http.Request) string {
 	return kiroCLITokenRedirectURI
 }
 
-func (o *KiroCLIOAuth) exchangeCodeForToken(ctx context.Context, code, verifier, redirectURI string) (*KiroTokenData, error) {
+func (o *KiroCLIOAuth) exchangeCodeForToken(ctx context.Context, code, verifier, redirectURI, provider string) (*KiroTokenData, error) {
+	if provider == "" {
+		provider = "Google"
+	}
 	redirectURI = strings.TrimSpace(redirectURI)
 	if redirectURI == "" {
 		redirectURI = kiroCLITokenRedirectURI
 	}
-	body, err := json.Marshal(cliTokenExchangeRequest{
-		Code:         code,
-		CodeVerifier: verifier,
-		RedirectURI:  redirectURI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal token exchange payload: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiroCLITokenEndpoint, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create token exchange request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Kiro-CLI")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("token exchange request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read token exchange response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	var tokenResp KiroTokenResponse
-	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse token exchange response: %w", err)
-	}
-
-	return &KiroTokenData{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
-		AuthMethod:   "kiro-cli",
-		Provider:     "Google",
-		Region:       "us-east-1",
-		Email:        ExtractEmailFromJWT(tokenResp.AccessToken),
-	}, nil
+	return doTokenExchange(ctx, o.httpClient, kiroCLITokenEndpoint, code, verifier, redirectURI, "Kiro-CLI", "kiro-cli", provider)
 }
 
-func (o *KiroCLIOAuth) RefreshToken(ctx context.Context, refreshToken string) (*KiroTokenData, error) {
-	payload, err := json.Marshal(map[string]string{"refreshToken": refreshToken})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal refresh payload: %w", err)
+func (o *KiroCLIOAuth) RefreshToken(ctx context.Context, refreshToken, provider string) (*KiroTokenData, error) {
+	if provider == "" {
+		provider = "Google"
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiroCLIRefreshEndpoint, strings.NewReader(string(payload)))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create refresh request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "Kiro-CLI")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("refresh request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read refresh response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("refresh failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	var tokenResp KiroTokenResponse
-	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
-	}
-
-	return &KiroTokenData{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
-		AuthMethod:   "kiro-cli",
-		Provider:     "Google",
-		Region:       "us-east-1",
-		Email:        ExtractEmailFromJWT(tokenResp.AccessToken),
-	}, nil
+	return doRefreshToken(ctx, o.httpClient, kiroCLIRefreshEndpoint, refreshToken, "Kiro-CLI", "kiro-cli", provider)
 }
 
 func (o *KiroCLIOAuth) handleLoginOption(ctx context.Context, cb cliCallbackResult, noBrowser bool, onAuthURLReady ...func(string)) (*KiroTokenData, error) {
@@ -367,8 +289,7 @@ func (o *KiroCLIOAuth) LoginWithCLI(ctx context.Context, noBrowser bool) (*KiroT
 
 	callbackCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	o.noBrowser = noBrowser // Make available to callback handler for redirect flow
-	callbackResult, shutdown, err := o.startCallbackServer(callbackCtx, state)
+	callbackResult, shutdown, err := o.startCallbackServer(callbackCtx, state, noBrowser)
 	if err != nil {
 		return nil, err
 	}
@@ -405,18 +326,12 @@ func (o *KiroCLIOAuth) LoginWithCLI(ctx context.Context, noBrowser bool) (*KiroT
 			return nil, fmt.Errorf("oauth state mismatch")
 		}
 
-		tokenData, errExchange := o.exchangeCodeForToken(ctx, cb.Code, verifier, cb.RedirectURI)
+		tokenData, errExchange := o.exchangeCodeForToken(ctx, cb.Code, verifier, cb.RedirectURI, capitalizeProvider(cb.LoginOption))
 		if errExchange != nil {
 			return nil, errExchange
 		}
 
 		go func(token string) {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Debugf("recovered from telemetry panic: %v", r)
-				}
-			}()
-
 			telemetryCtx, telemetryCancel := context.WithTimeout(context.Background(), kiroCLITelemetryTimeout)
 			defer telemetryCancel()
 			if errTelemetry := o.sendLoginTelemetry(telemetryCtx, token); errTelemetry != nil {
@@ -466,7 +381,7 @@ func (o *KiroCLIOAuth) sendLoginTelemetry(ctx context.Context, accessToken strin
 		return fmt.Errorf("failed to marshal telemetry payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiroCLITelemetryEndpoint, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiroCLITelemetryEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create telemetry request: %w", err)
 	}
@@ -480,7 +395,7 @@ func (o *KiroCLIOAuth) sendLoginTelemetry(ctx context.Context, accessToken strin
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := readResponseBody(resp)
 		log.Warnf("kiro-cli telemetry returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 		return fmt.Errorf("telemetry status %d", resp.StatusCode)
 	}
@@ -536,7 +451,7 @@ func (o *KiroCLIOAuth) callCognitoIdentity(ctx context.Context, target string, p
 		return fmt.Errorf("failed to marshal cognito payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiroCLICognitoEndpoint, strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, kiroCLICognitoEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create cognito request: %w", err)
 	}
@@ -554,7 +469,7 @@ func (o *KiroCLIOAuth) callCognitoIdentity(ctx context.Context, target string, p
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return fmt.Errorf("failed to read cognito response: %w", err)
 	}

@@ -3,14 +3,12 @@ package kiro
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -65,38 +63,8 @@ func (o *KiroOAuth) LoginWithBuilderIDAuthCode(ctx context.Context, noBrowser bo
 // exchangeCodeForToken exchanges the authorization code for tokens.
 func (o *KiroOAuth) exchangeCodeForToken(ctx context.Context, code, codeVerifier, redirectURI string) (*KiroTokenData, error) {
 	tokenURL := kiroAuthEndpoint + "/oauth/token"
-	respBody, statusCode, err := doJSONPost(ctx, o.httpClient, tokenURL,
-		map[string]string{
-			"code":          code,
-			"code_verifier": codeVerifier,
-			"redirect_uri":  redirectURI,
-		},
-		map[string]string{
-			"User-Agent": fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID),
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("token request failed: %w", err)
-	}
-
-	if statusCode != http.StatusOK {
-		log.Debugf("token exchange failed (status %d): %s", statusCode, string(respBody))
-		return nil, fmt.Errorf("token exchange failed (status %d)", statusCode)
-	}
-
-	var tokenResp KiroTokenResponse
-	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse token response: %w", err)
-	}
-
-	return &KiroTokenData{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
-		AuthMethod:   "social",
-		Region:       "us-east-1",
-	}, nil
+	userAgent := fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID)
+	return doTokenExchange(ctx, o.httpClient, tokenURL, code, codeVerifier, redirectURI, userAgent, "social", "")
 }
 
 // RefreshToken refreshes an expired access token.
@@ -109,34 +77,8 @@ func (o *KiroOAuth) RefreshToken(ctx context.Context, refreshToken string) (*Kir
 // tokenKey is used to generate a consistent fingerprint for the token.
 func (o *KiroOAuth) RefreshTokenWithFingerprint(ctx context.Context, refreshToken, tokenKey string) (*KiroTokenData, error) {
 	refreshURL := kiroAuthEndpoint + "/refreshToken"
-	respBody, statusCode, err := doJSONPost(ctx, o.httpClient, refreshURL,
-		map[string]string{"refreshToken": refreshToken},
-		map[string]string{
-			"User-Agent": fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID),
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("refresh request failed: %w", err)
-	}
-
-	if statusCode != http.StatusOK {
-		log.Debugf("token refresh failed (status %d): %s", statusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d): %s", statusCode, string(respBody))
-	}
-
-	var tokenResp KiroTokenResponse
-	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse token response: %w", err)
-	}
-
-	return &KiroTokenData{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
-		AuthMethod:   "social",
-		Region:       "us-east-1",
-	}, nil
+	userAgent := fmt.Sprintf("KiroIDE-%s-%s", o.kiroVersion, o.machineID)
+	return doRefreshToken(ctx, o.httpClient, refreshURL, refreshToken, userAgent, "social", "")
 }
 
 // LoginWithGoogle performs OAuth login with Google using Kiro's social auth.

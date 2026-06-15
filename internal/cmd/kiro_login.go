@@ -15,7 +15,7 @@ import (
 // Parameters:
 //   - cfg: The application configuration
 //   - options: Login options including NoBrowser flag
-func DoKiroCLILogin(cfg *config.Config, options *LoginOptions) {
+func DoKiroCLILogin(cfg *config.Config, options *LoginOptions) error {
 	if options == nil {
 		options = &LoginOptions{}
 	}
@@ -33,13 +33,13 @@ func DoKiroCLILogin(cfg *config.Config, options *LoginOptions) {
 		fmt.Println("1. Complete the browser login flow")
 		fmt.Println("2. Ensure callback port 3128 is available")
 		fmt.Println("3. If callback fails, try logging in via Kiro IDE and importing the token")
-		return
+		return fmt.Errorf("Kiro CLI authentication failed: %w", err)
 	}
 
 	savedPath, err := manager.SaveAuth(record, cfg)
 	if err != nil {
 		log.Errorf("Failed to save auth: %v", err)
-		return
+		return fmt.Errorf("failed to save auth: %w", err)
 	}
 
 	if savedPath != "" {
@@ -49,4 +49,5 @@ func DoKiroCLILogin(cfg *config.Config, options *LoginOptions) {
 		fmt.Printf("Authenticated as %s\n", record.Label)
 	}
 	fmt.Println("Kiro CLI authentication successful!")
+	return nil
 }

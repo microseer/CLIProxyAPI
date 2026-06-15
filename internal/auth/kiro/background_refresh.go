@@ -195,7 +195,7 @@ func (r *BackgroundRefresher) refreshSingle(ctx context.Context, token *Token) {
 			if cliOAuth == nil {
 				return nil, fmt.Errorf("kiro-cli refresh requested but cli oauth is not initialized")
 			}
-			return cliOAuth.RefreshToken(ctx, token.RefreshToken)
+			return cliOAuth.RefreshToken(ctx, token.RefreshToken, token.Provider)
 		case "social":
 			return r.oauth.RefreshTokenWithFingerprint(ctx, token.RefreshToken, token.ID)
 		default:

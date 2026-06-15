@@ -1,6 +1,7 @@
 package kiro
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,6 +17,26 @@ import (
 
 	log "github.com/sirupsen/logrus"
 )
+
+// maxResponseBodySize limits HTTP response body reads to 10MB to prevent OOM from malicious responses.
+const maxResponseBodySize = 10 * 1024 * 1024
+
+// Retry configuration for transient HTTP errors.
+const (
+	maxRetryAttempts = 2                      // Maximum retry attempts (total 3 tries)
+	retryBaseDelay   = 500 * time.Millisecond // Base delay between retries
+	maxRetryBodyRead = 1024 * 1024            // Max body size to buffer for retry (1MB)
+)
+
+// isTransientHTTPError returns true for status codes that warrant a retry.
+func isTransientHTTPError(statusCode int) bool {
+	return statusCode >= 500 && statusCode < 600
+}
+
+// readResponseBody reads an HTTP response body with a size limit.
+func readResponseBody(resp *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
+}
 
 // generatePKCE generates a PKCE code verifier and SHA256 code challenge.
 // This is the single source of truth for PKCE generation across the kiro package.
@@ -162,14 +183,59 @@ func startCallbackServer(ctx context.Context, expectedState string, cfg callback
 }
 
 // doJSONPost sends a JSON POST request and returns the response body, status code, and error.
-// This eliminates repetitive HTTP POST boilerplate across OAuth token exchanges.
+// It retries on transient failures (5xx status codes and network errors) with exponential backoff.
 func doJSONPost(ctx context.Context, httpClient *http.Client, reqURL string, payload any, headers map[string]string) ([]byte, int, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(string(body)))
+	// Buffer the payload for retries (limit size to prevent excessive memory use)
+	if len(body) > maxRetryBodyRead {
+		// For large payloads, skip retry and do a single attempt
+		return doJSONPostOnce(ctx, httpClient, reqURL, body, headers)
+	}
+
+	var lastErr error
+	var lastStatusCode int
+	var lastRespBody []byte
+
+	for attempt := 0; attempt <= maxRetryAttempts; attempt++ {
+		if attempt > 0 {
+			delay := retryBaseDelay * time.Duration(1<<(attempt-1)) // Exponential backoff
+			select {
+			case <-ctx.Done():
+				return nil, 0, ctx.Err()
+			case <-time.After(delay):
+			}
+			log.Debugf("doJSONPost: retrying %s (attempt %d/%d)", reqURL, attempt+1, maxRetryAttempts+1)
+		}
+
+		respBody, statusCode, err := doJSONPostOnce(ctx, httpClient, reqURL, body, headers)
+		if err != nil {
+			lastErr = err
+			continue // Retry on network errors
+		}
+
+		if !isTransientHTTPError(statusCode) {
+			return respBody, statusCode, nil // Non-transient, return immediately
+		}
+
+		lastErr = fmt.Errorf("server returned status %d", statusCode)
+		lastStatusCode = statusCode
+		lastRespBody = respBody
+	}
+
+	// All retries exhausted
+	if lastRespBody != nil {
+		return lastRespBody, lastStatusCode, nil
+	}
+	return nil, 0, fmt.Errorf("request failed after %d attempts: %w", maxRetryAttempts+1, lastErr)
+}
+
+// doJSONPostOnce performs a single JSON POST request attempt.
+func doJSONPostOnce(ctx context.Context, httpClient *http.Client, reqURL string, body []byte, headers map[string]string) ([]byte, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -190,10 +256,81 @@ func doJSONPost(ctx context.Context, httpClient *http.Client, reqURL string, pay
 		}
 	}()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return nil, resp.StatusCode, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	return respBody, resp.StatusCode, nil
+}
+
+// doRefreshToken is a shared implementation for Kiro OAuth token refresh.
+// It sends a refresh request to the Kiro auth endpoint and returns the parsed token data.
+// The caller provides the HTTP client, endpoint URL, refresh token, User-Agent, authMethod, and provider.
+func doRefreshToken(ctx context.Context, httpClient *http.Client, endpoint, refreshToken, userAgent, authMethod, provider string) (*KiroTokenData, error) {
+	respBody, statusCode, err := doJSONPost(ctx, httpClient, endpoint,
+		map[string]string{"refreshToken": refreshToken},
+		map[string]string{"User-Agent": userAgent},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("refresh request failed: %w", err)
+	}
+
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("token refresh failed (status %d): %s", statusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var tokenResp KiroTokenResponse
+	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
+	}
+
+	return &KiroTokenData{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ProfileArn:   tokenResp.ProfileArn,
+		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
+		AuthMethod:   authMethod,
+		Provider:     provider,
+		Region:       "us-east-1",
+		Email:        ExtractEmailFromJWT(tokenResp.AccessToken),
+	}, nil
+}
+
+// doTokenExchange is a shared implementation for exchanging an OAuth authorization code for tokens.
+// It sends a token exchange request to the Kiro auth endpoint and returns the parsed token data.
+func doTokenExchange(ctx context.Context, httpClient *http.Client, endpoint string, code, codeVerifier, redirectURI, userAgent, authMethod, provider string) (*KiroTokenData, error) {
+	respBody, statusCode, err := doJSONPost(ctx, httpClient, endpoint,
+		map[string]string{
+			"code":          code,
+			"code_verifier": codeVerifier,
+			"redirect_uri":  redirectURI,
+		},
+		map[string]string{
+			"User-Agent": userAgent,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request failed: %w", err)
+	}
+
+	if statusCode != http.StatusOK {
+		return nil, fmt.Errorf("token exchange failed (status %d): %s", statusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var tokenResp KiroTokenResponse
+	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token exchange response: %w", err)
+	}
+
+	return &KiroTokenData{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ProfileArn:   tokenResp.ProfileArn,
+		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
+		AuthMethod:   authMethod,
+		Provider:     provider,
+		Region:       "us-east-1",
+		Email:        ExtractEmailFromJWT(tokenResp.AccessToken),
+	}, nil
 }

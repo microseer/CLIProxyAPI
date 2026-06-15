@@ -3,16 +3,17 @@ package kiro
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,8 +153,8 @@ func promptSelect(prompt string, options []string) int {
 		input = strings.TrimSpace(input)
 
 		// Parse the selection
-		var selection int
-		if _, err := fmt.Sscanf(input, "%d", &selection); err != nil || selection < 1 || selection > len(options) {
+		selection, err := strconv.Atoi(input)
+		if err != nil || selection < 1 || selection > len(options) {
 			fmt.Printf("Invalid selection '%s'. Please enter a number between 1 and %d.\n\n", input, len(options))
 			continue
 		}
@@ -177,7 +178,7 @@ func (c *SSOOIDCClient) RegisterClientWithRegion(ctx context.Context, region str
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +190,7 @@ func (c *SSOOIDCClient) RegisterClientWithRegion(ctx context.Context, region str
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +223,7 @@ func (c *SSOOIDCClient) StartDeviceAuthorizationWithIDC(ctx context.Context, cli
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/device_authorization", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/device_authorization", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +235,7 @@ func (c *SSOOIDCClient) StartDeviceAuthorizationWithIDC(ctx context.Context, cli
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +269,7 @@ func (c *SSOOIDCClient) CreateTokenWithRegion(ctx context.Context, clientID, cli
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +281,7 @@ func (c *SSOOIDCClient) CreateTokenWithRegion(ctx context.Context, clientID, cli
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +335,7 @@ func (c *SSOOIDCClient) RefreshTokenWithRegion(ctx context.Context, clientID, cl
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +347,7 @@ func (c *SSOOIDCClient) RefreshTokenWithRegion(ctx context.Context, clientID, cl
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -378,119 +379,15 @@ func (c *SSOOIDCClient) RefreshTokenWithRegion(ctx context.Context, clientID, cl
 
 // LoginWithIDC performs the full device code flow for AWS Identity Center (IDC).
 func (c *SSOOIDCClient) LoginWithIDC(ctx context.Context, startURL, region string, noBrowser bool) (*KiroTokenData, error) {
-	fmt.Println("\n╔══════════════════════════════════════════════════════════╗")
-	fmt.Println("║       Kiro Authentication (AWS Identity Center)          ║")
-	fmt.Println("╚══════════════════════════════════════════════════════════╝")
-
-	// Step 1: Register client with the specified region
-	fmt.Println("\nRegistering client...")
-	regResp, err := c.RegisterClientWithRegion(ctx, region)
-	if err != nil {
-		return nil, fmt.Errorf("failed to register client: %w", err)
-	}
-	log.Debugf("Client registered: %s", regResp.ClientID)
-
-	// Step 2: Start device authorization with IDC start URL
-	fmt.Println("Starting device authorization...")
-	authResp, err := c.StartDeviceAuthorizationWithIDC(ctx, regResp.ClientID, regResp.ClientSecret, startURL, region)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start device auth: %w", err)
-	}
-
-	// Step 3: Show user the verification URL
-	fmt.Printf("\n")
-	fmt.Println("════════════════════════════════════════════════════════════")
-	fmt.Printf("  Confirm the following code in the browser:\n")
-	fmt.Printf("  Code: %s\n", authResp.UserCode)
-	fmt.Println("════════════════════════════════════════════════════════════")
-	fmt.Printf("\n  Open this URL: %s\n\n", authResp.VerificationURIComplete)
-
-	// Set incognito mode based on config
-	if c.cfg != nil {
-		browser.SetIncognitoMode(c.cfg.IncognitoBrowser)
-		if !c.cfg.IncognitoBrowser {
-			log.Info("kiro: using normal browser mode (--no-incognito). Note: You may not be able to select a different account.")
-		} else {
-			log.Debug("kiro: using incognito mode for multi-account support")
-		}
-	} else {
-		browser.SetIncognitoMode(true)
-		log.Debug("kiro: using incognito mode for multi-account support (default)")
-	}
-
-	// Open browser
-	_ = openBrowserURL(authResp.VerificationURIComplete, noBrowser)
-
-	// Step 4: Poll for token
-	fmt.Println("Waiting for authorization...")
-
-	interval := pollInterval
-	if authResp.Interval > 0 {
-		interval = time.Duration(authResp.Interval) * time.Second
-	}
-
-	deadline := time.Now().Add(time.Duration(authResp.ExpiresIn) * time.Second)
-
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			browser.CloseBrowser()
-			return nil, ctx.Err()
-		case <-time.After(interval):
-			tokenResp, err := c.CreateTokenWithRegion(ctx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode, region)
-			if err != nil {
-				if errors.Is(err, ErrAuthorizationPending) {
-					fmt.Print(".")
-					continue
-				}
-				if errors.Is(err, ErrSlowDown) {
-					interval += 5 * time.Second
-					continue
-				}
-				browser.CloseBrowser()
-				return nil, fmt.Errorf("token creation failed: %w", err)
-			}
-
-			fmt.Println("\n\n✓ Authorization successful!")
-
-			// Close the browser window
-			if err := browser.CloseBrowser(); err != nil {
-				log.Debugf("Failed to close browser: %v", err)
-			}
-
-			// Step 5: Get profile ARN from CodeWhisperer API
-			fmt.Println("Fetching profile information...")
-			profileArn := c.FetchProfileArn(ctx, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
-
-			// Fetch user email
-			email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, "builder-id")
-			if email != "" {
-				fmt.Printf("  Logged in as: %s\n", email)
-			}
-
-			expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-
-			return &KiroTokenData{
-				AccessToken:  tokenResp.AccessToken,
-				RefreshToken: tokenResp.RefreshToken,
-				ProfileArn:   profileArn,
-				ExpiresAt:    expiresAt.Format(time.RFC3339),
-				AuthMethod:   "idc",
-				Provider:     "AWS",
-				ClientID:     regResp.ClientID,
-				ClientSecret: regResp.ClientSecret,
-				Email:        email,
-				StartURL:     startURL,
-				Region:       region,
-			}, nil
-		}
-	}
-
-	// Close browser on timeout
-	if err := browser.CloseBrowser(); err != nil {
-		log.Debugf("Failed to close browser on timeout: %v", err)
-	}
-	return nil, fmt.Errorf("authorization timed out")
+	provider := normalizeIDCProvider("", startURL)
+	return c.performDeviceCodeFlow(ctx, deviceCodeFlowConfig{
+		StartURL:    startURL,
+		Region:      region,
+		AuthMethod:  "idc",
+		Provider:    provider,
+		NoBrowser:   noBrowser,
+		HeaderTitle: "Kiro Authentication (AWS Identity Center)",
+	})
 }
 
 // openBrowserURL opens the given URL in the browser unless noBrowser is set.
@@ -627,15 +524,25 @@ func (c *SSOOIDCClient) RefreshToken(ctx context.Context, clientID, clientSecret
 	return c.RefreshTokenWithRegion(ctx, clientID, clientSecret, refreshToken, defaultIDCRegion, "")
 }
 
-// LoginWithBuilderID performs the full device code flow for AWS Builder ID.
-func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
+// deviceCodeFlowConfig holds parameters for the device code authorization flow.
+type deviceCodeFlowConfig struct {
+	StartURL    string
+	Region      string
+	AuthMethod  string // "builder-id" or "idc"
+	Provider    string // "AWS" or "Enterprise"
+	NoBrowser   bool
+	HeaderTitle string // Title for the UI banner
+}
+
+// performDeviceCodeFlow executes the common device code authorization flow.
+func (c *SSOOIDCClient) performDeviceCodeFlow(ctx context.Context, cfg deviceCodeFlowConfig) (*KiroTokenData, error) {
 	fmt.Println("\n╔══════════════════════════════════════════════════════════╗")
-	fmt.Println("║         Kiro Authentication (AWS Builder ID)              ║")
+	fmt.Printf("║       %s          ║\n", cfg.HeaderTitle)
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 
 	// Step 1: Register client
 	fmt.Println("\nRegistering client...")
-	regResp, err := c.RegisterClient(ctx)
+	regResp, err := c.RegisterClientWithRegion(ctx, cfg.Region)
 	if err != nil {
 		return nil, fmt.Errorf("failed to register client: %w", err)
 	}
@@ -643,7 +550,7 @@ func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) 
 
 	// Step 2: Start device authorization
 	fmt.Println("Starting device authorization...")
-	authResp, err := c.StartDeviceAuthorization(ctx, regResp.ClientID, regResp.ClientSecret)
+	authResp, err := c.StartDeviceAuthorizationWithIDC(ctx, regResp.ClientID, regResp.ClientSecret, cfg.StartURL, cfg.Region)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start device auth: %w", err)
 	}
@@ -651,14 +558,12 @@ func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) 
 	// Step 3: Show user the verification URL
 	fmt.Printf("\n")
 	fmt.Println("════════════════════════════════════════════════════════════")
-	fmt.Printf("  Open this URL in your browser:\n")
-	fmt.Printf("  %s\n", authResp.VerificationURIComplete)
+	fmt.Printf("  Confirm the following code in the browser:\n")
+	fmt.Printf("  Code: %s\n", authResp.UserCode)
 	fmt.Println("════════════════════════════════════════════════════════════")
-	fmt.Printf("\n  Or go to: %s\n", authResp.VerificationURI)
-	fmt.Printf("  And enter code: %s\n\n", authResp.UserCode)
+	fmt.Printf("\n  Open this URL: %s\n\n", authResp.VerificationURIComplete)
 
-	// Set incognito mode based on config (defaults to true for Kiro, can be overridden with --no-incognito)
-	// Incognito mode enables multi-account support by bypassing cached sessions
+	// Set incognito mode based on config
 	if c.cfg != nil {
 		browser.SetIncognitoMode(c.cfg.IncognitoBrowser)
 		if !c.cfg.IncognitoBrowser {
@@ -667,12 +572,12 @@ func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) 
 			log.Debug("kiro: using incognito mode for multi-account support")
 		}
 	} else {
-		browser.SetIncognitoMode(true) // Default to incognito if no config
+		browser.SetIncognitoMode(true)
 		log.Debug("kiro: using incognito mode for multi-account support (default)")
 	}
 
-	// Open browser using cross-platform browser package
-	_ = openBrowserURL(authResp.VerificationURIComplete, noBrowser)
+	// Open browser
+	_ = openBrowserURL(authResp.VerificationURIComplete, cfg.NoBrowser)
 
 	// Step 4: Poll for token
 	fmt.Println("Waiting for authorization...")
@@ -687,10 +592,10 @@ func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			browser.CloseBrowser() // Cleanup on cancel
+			browser.CloseBrowser()
 			return nil, ctx.Err()
 		case <-time.After(interval):
-			tokenResp, err := c.CreateToken(ctx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode)
+			tokenResp, err := c.CreateTokenWithRegion(ctx, regResp.ClientID, regResp.ClientSecret, authResp.DeviceCode, cfg.Region)
 			if err != nil {
 				if errors.Is(err, ErrAuthorizationPending) {
 					fmt.Print(".")
@@ -700,20 +605,25 @@ func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) 
 					interval += 5 * time.Second
 					continue
 				}
-				// Close browser on error before returning
 				browser.CloseBrowser()
 				return nil, fmt.Errorf("token creation failed: %w", err)
 			}
 
 			fmt.Println("\n\n✓ Authorization successful!")
 
-			// Close the browser window
 			if err := browser.CloseBrowser(); err != nil {
 				log.Debugf("Failed to close browser: %v", err)
 			}
 
-			// Fetch user email (tries CodeWhisperer API first, then userinfo endpoint, then JWT parsing)
-			email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, "builder-id")
+			// Step 5: Fetch profile ARN (only for non-BuilderId)
+			var profileArn string
+			if cfg.AuthMethod != "builder-id" {
+				fmt.Println("Fetching profile information...")
+				profileArn = c.FetchProfileArn(ctx, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken)
+			}
+
+			// Fetch user email
+			email := FetchUserEmailWithFallback(ctx, c.cfg, tokenResp.AccessToken, regResp.ClientID, tokenResp.RefreshToken, cfg.AuthMethod)
 			if email != "" {
 				fmt.Printf("  Logged in as: %s\n", email)
 			}
@@ -723,23 +633,36 @@ func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) 
 			return &KiroTokenData{
 				AccessToken:  tokenResp.AccessToken,
 				RefreshToken: tokenResp.RefreshToken,
-				ProfileArn:   "", // Builder ID has no profile
+				ProfileArn:   profileArn,
 				ExpiresAt:    expiresAt.Format(time.RFC3339),
-				AuthMethod:   "builder-id",
-				Provider:     "AWS",
+				AuthMethod:   cfg.AuthMethod,
+				Provider:     cfg.Provider,
 				ClientID:     regResp.ClientID,
 				ClientSecret: regResp.ClientSecret,
+				ClientIDHash: ComputeIDCClientIDHash(cfg.StartURL),
 				Email:        email,
-				Region:       defaultIDCRegion,
+				StartURL:     cfg.StartURL,
+				Region:       cfg.Region,
 			}, nil
 		}
 	}
 
-	// Close browser on timeout for better UX
 	if err := browser.CloseBrowser(); err != nil {
 		log.Debugf("Failed to close browser on timeout: %v", err)
 	}
 	return nil, fmt.Errorf("authorization timed out")
+}
+
+// LoginWithBuilderID performs the full device code flow for AWS Builder ID.
+func (c *SSOOIDCClient) LoginWithBuilderID(ctx context.Context, noBrowser bool) (*KiroTokenData, error) {
+	return c.performDeviceCodeFlow(ctx, deviceCodeFlowConfig{
+		StartURL:    builderIDStartURL,
+		Region:      defaultIDCRegion,
+		AuthMethod:  "builder-id",
+		Provider:    "AWS",
+		NoBrowser:   noBrowser,
+		HeaderTitle: "Kiro Authentication (AWS Builder ID)",
+	})
 }
 
 // FetchUserEmail retrieves the user's email from AWS SSO OIDC userinfo endpoint.
@@ -778,12 +701,12 @@ func (c *SSOOIDCClient) tryUserInfoEndpoint(ctx context.Context, accessToken str
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := readResponseBody(resp)
 		log.Debugf("userinfo endpoint returned status %d: %s", resp.StatusCode, string(respBody))
 		return ""
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return ""
 	}
@@ -837,7 +760,7 @@ func (c *SSOOIDCClient) tryListAvailableProfiles(ctx context.Context, accessToke
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := readResponseBody(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		log.Debugf("ListAvailableProfiles failed (status %d): %s", resp.StatusCode, string(respBody))
@@ -879,7 +802,7 @@ func (c *SSOOIDCClient) tryListProfilesLegacy(ctx context.Context, accessToken s
 
 	// Use the legacy CodeWhisperer endpoint for JSON-RPC style requests.
 	// The Q endpoint (q.{region}.amazonaws.com) does NOT support x-amz-target headers.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, GetCodeWhispererLegacyEndpoint(""), strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, GetCodeWhispererLegacyEndpoint(""), bytes.NewReader(body))
 	if err != nil {
 		return ""
 	}
@@ -895,7 +818,7 @@ func (c *SSOOIDCClient) tryListProfilesLegacy(ctx context.Context, accessToken s
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := readResponseBody(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		log.Debugf("ListProfiles (legacy) failed (status %d): %s", resp.StatusCode, string(respBody))
@@ -932,7 +855,7 @@ func (c *SSOOIDCClient) RegisterClientForAuthCode(ctx context.Context, redirectU
 }
 
 func (c *SSOOIDCClient) RegisterClientForAuthCodeWithIDC(ctx context.Context, redirectURI, issuerUrl, region string) (*RegisterClientResponse, error) {
-	endpoint := getOIDCEndpoint(region)
+	endpoint := c.getOIDCEndpointWithOverride(region)
 
 	payload := map[string]interface{}{
 		"clientName":   "Kiro IDE",
@@ -948,7 +871,7 @@ func (c *SSOOIDCClient) RegisterClientForAuthCodeWithIDC(ctx context.Context, re
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/client/register", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -960,7 +883,7 @@ func (c *SSOOIDCClient) RegisterClientForAuthCodeWithIDC(ctx context.Context, re
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -1020,7 +943,7 @@ func (c *SSOOIDCClient) CreateTokenWithAuthCodeAndRegion(ctx context.Context, cl
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/token", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -1032,7 +955,7 @@ func (c *SSOOIDCClient) CreateTokenWithAuthCodeAndRegion(ctx context.Context, cl
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp)
 	if err != nil {
 		return nil, err
 	}

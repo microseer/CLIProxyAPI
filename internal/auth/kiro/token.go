@@ -11,32 +11,10 @@ import (
 type KiroTokenStorage struct {
 	// Type is the provider type for management UI recognition (must be "kiro")
 	Type string `json:"type"`
-	// AccessToken is the OAuth2 access token for API access
-	AccessToken string `json:"access_token"`
-	// RefreshToken is used to obtain new access tokens
-	RefreshToken string `json:"refresh_token"`
-	// ProfileArn is the AWS CodeWhisperer profile ARN
-	ProfileArn string `json:"profile_arn"`
-	// ExpiresAt is the timestamp when the token expires
-	ExpiresAt string `json:"expires_at"`
-	// AuthMethod indicates the authentication method used
-	AuthMethod string `json:"auth_method"`
-	// Provider indicates the OAuth provider
-	Provider string `json:"provider"`
 	// LastRefresh is the timestamp of the last token refresh
 	LastRefresh string `json:"last_refresh"`
-	// ClientID is the OAuth client ID (required for token refresh)
-	ClientID string `json:"client_id,omitempty"`
-	// ClientSecret is the OAuth client secret (required for token refresh)
-	ClientSecret string `json:"client_secret,omitempty"`
-	// ClientIDHash is used to locate AWS SSO device registration credentials
-	ClientIDHash string `json:"client_id_hash,omitempty"`
-	// Region is the OIDC region for IDC login and token refresh
-	Region string `json:"region,omitempty"`
-	// StartURL is the AWS Identity Center start URL (for IDC auth)
-	StartURL string `json:"start_url,omitempty"`
-	// Email is the user's email address
-	Email string `json:"email,omitempty"`
+	// KiroTokenData holds the core token data (embedded for reduced duplication)
+	*KiroTokenData
 }
 
 // SaveTokenToFile persists the token storage to the specified file path.
@@ -58,20 +36,10 @@ func (s *KiroTokenStorage) SaveTokenToFile(authFilePath string) error {
 	return nil
 }
 
-// ToTokenData converts storage to KiroTokenData for API use.
+// ToTokenData returns the embedded KiroTokenData.
 func (s *KiroTokenStorage) ToTokenData() *KiroTokenData {
-	return &KiroTokenData{
-		AccessToken:  s.AccessToken,
-		RefreshToken: s.RefreshToken,
-		ProfileArn:   s.ProfileArn,
-		ExpiresAt:    s.ExpiresAt,
-		AuthMethod:   s.AuthMethod,
-		Provider:     s.Provider,
-		ClientID:     s.ClientID,
-		ClientSecret: s.ClientSecret,
-		ClientIDHash: s.ClientIDHash,
-		Region:       s.Region,
-		StartURL:     s.StartURL,
-		Email:        s.Email,
+	if s.KiroTokenData == nil {
+		return &KiroTokenData{}
 	}
+	return s.KiroTokenData
 }

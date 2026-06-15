@@ -58,11 +58,6 @@ type SocialTokenResponse struct {
 	ExpiresIn    int    `json:"expiresIn"`
 }
 
-// RefreshTokenRequest is sent to Kiro's /refreshToken endpoint.
-type RefreshTokenRequest struct {
-	RefreshToken string `json:"refreshToken"`
-}
-
 // SocialAuthClient handles social authentication with Kiro.
 type SocialAuthClient struct {
 	httpClient      *http.Client
@@ -130,34 +125,8 @@ func (c *SocialAuthClient) CreateToken(ctx context.Context, req *CreateTokenRequ
 // RefreshSocialToken refreshes an expired social auth token.
 func (c *SocialAuthClient) RefreshSocialToken(ctx context.Context, refreshToken string) (*KiroTokenData, error) {
 	refreshURL := kiroAuthServiceEndpoint + "/refreshToken"
-	respBody, statusCode, err := doJSONPost(ctx, c.httpClient, refreshURL,
-		&RefreshTokenRequest{RefreshToken: refreshToken},
-		map[string]string{
-			"User-Agent": fmt.Sprintf("KiroIDE-%s-%s", c.kiroVersion, c.machineID),
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("refresh request failed: %w", err)
-	}
-
-	if statusCode != http.StatusOK {
-		log.Debugf("token refresh failed (status %d): %s", statusCode, string(respBody))
-		return nil, fmt.Errorf("token refresh failed (status %d)", statusCode)
-	}
-
-	var tokenResp SocialTokenResponse
-	if err := json.Unmarshal(respBody, &tokenResp); err != nil {
-		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
-	}
-
-	return &KiroTokenData{
-		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
-		ProfileArn:   tokenResp.ProfileArn,
-		ExpiresAt:    expiresAtFromSeconds(tokenResp.ExpiresIn).Format(time.RFC3339),
-		AuthMethod:   "social",
-		Region:       "us-east-1",
-	}, nil
+	userAgent := fmt.Sprintf("KiroIDE-%s-%s", c.kiroVersion, c.machineID)
+	return doRefreshToken(ctx, c.httpClient, refreshURL, refreshToken, userAgent, "social", "")
 }
 
 // LoginWithSocial performs OAuth login with Google or GitHub.
