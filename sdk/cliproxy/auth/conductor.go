@@ -4139,7 +4139,7 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
 		switch strings.ToLower(code) {
 		case "model_not_found":
 			status = http.StatusNotFound
-		case "authentication_error", "unauthorized":
+		case "authentication_error", "unauthorized", "no_credentials", "invalid_credential":
 			status = http.StatusUnauthorized
 		}
 		return nil, nil, "", &Error{Code: code, Message: msg, HTTPStatus: status}
@@ -4425,6 +4425,9 @@ func (m *Manager) persist(ctx context.Context, auth *Auth) error {
 		return nil
 	}
 	if shouldSkipPersist(ctx) {
+		return nil
+	}
+	if IsConfigAPIKeyAuth(auth) {
 		return nil
 	}
 	if auth.Attributes != nil {
