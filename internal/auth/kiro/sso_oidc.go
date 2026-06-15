@@ -563,19 +563,6 @@ func (c *SSOOIDCClient) performDeviceCodeFlow(ctx context.Context, cfg deviceCod
 	fmt.Println("════════════════════════════════════════════════════════════")
 	fmt.Printf("\n  Open this URL: %s\n\n", authResp.VerificationURIComplete)
 
-	// Set incognito mode based on config
-	if c.cfg != nil {
-		browser.SetIncognitoMode(c.cfg.IncognitoBrowser)
-		if !c.cfg.IncognitoBrowser {
-			log.Info("kiro: using normal browser mode (--no-incognito). Note: You may not be able to select a different account.")
-		} else {
-			log.Debug("kiro: using incognito mode for multi-account support")
-		}
-	} else {
-		browser.SetIncognitoMode(true)
-		log.Debug("kiro: using incognito mode for multi-account support (default)")
-	}
-
 	// Open browser
 	_ = openBrowserURL(authResp.VerificationURIComplete, cfg.NoBrowser)
 
@@ -1024,13 +1011,6 @@ func (c *SSOOIDCClient) LoginWithBuilderIDAuthCode(ctx context.Context, noBrowse
 	fmt.Println("════════════════════════════════════════════════════════════")
 	fmt.Printf("\n  URL: %s\n\n", authURL)
 
-	// Set incognito mode
-	if c.cfg != nil {
-		browser.SetIncognitoMode(c.cfg.IncognitoBrowser)
-	} else {
-		browser.SetIncognitoMode(true)
-	}
-
 	_ = openBrowserURL(authURL, noBrowser)
 
 	fmt.Println("\n  Waiting for authorization callback...")
@@ -1135,12 +1115,6 @@ func (c *SSOOIDCClient) LoginWithIDCAuthCodeProvider(ctx context.Context, startU
 	fmt.Println("  Opening browser for authentication...")
 	fmt.Println("════════════════════════════════════════════════════════════")
 	fmt.Printf("\n  URL: %s\n\n", authURL)
-
-	if c.cfg != nil {
-		browser.SetIncognitoMode(c.cfg.IncognitoBrowser)
-	} else {
-		browser.SetIncognitoMode(true)
-	}
 
 	_ = openBrowserURL(authURL, noBrowser)
 

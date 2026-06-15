@@ -156,10 +156,6 @@ type Config struct {
 	// OAuthEndpointOverrides allows per-provider OAuth endpoint URL overrides.
 	OAuthEndpointOverrides map[string]OAuthEndpointConfig `yaml:"oauth-endpoint-overrides,omitempty" json:"oauth-endpoint-overrides,omitempty"`
 
-	// IncognitoBrowser enables opening OAuth URLs in incognito/private browsing mode.
-	// Useful when logging in with a different account without affecting the current session.
-	// Default: false.
-	IncognitoBrowser bool `yaml:"incognito-browser" json:"incognito-browser"`
 }
 
 // PluginsConfig holds dynamic plugin system settings.

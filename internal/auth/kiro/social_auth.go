@@ -172,18 +172,6 @@ func (c *SocialAuthClient) LoginWithSocial(ctx context.Context, provider SocialP
 	redirectURI := KiroRedirectURI
 	authURL := c.buildLoginURL(providerName, redirectURI, codeChallenge, state)
 
-	if c.cfg != nil {
-		browser.SetIncognitoMode(c.cfg.IncognitoBrowser)
-		if !c.cfg.IncognitoBrowser {
-			log.Info("kiro: using normal browser mode (--no-incognito). Note: You may not be able to select a different account.")
-		} else {
-			log.Debug("kiro: using incognito mode for multi-account support")
-		}
-	} else {
-		browser.SetIncognitoMode(true)
-		log.Debug("kiro: using incognito mode for multi-account support (default)")
-	}
-
 	fmt.Println("\n════════════════════════════════════════════════════════════")
 	fmt.Printf("  Opening browser for %s authentication...\n", providerName)
 	fmt.Println("════════════════════════════════════════════════════════════")
