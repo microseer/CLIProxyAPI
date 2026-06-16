@@ -24,7 +24,7 @@ const (
 	DefaultDomain     = "www.codebuddy.cn"
 	IntlBaseURL       = "https://www.codebuddy.ai"
 	IntlDefaultDomain = "www.codebuddy.ai"
-	UserAgent         = "CLI/2.63.2 CodeBuddy/2.63.2"
+	UserAgent         = "CLI/2.106.5 CodeBuddy/2.106.5"
 
 	codeBuddyStatePath   = "/v2/plugin/auth/state"
 	codeBuddyTokenPath   = "/v2/plugin/auth/token"

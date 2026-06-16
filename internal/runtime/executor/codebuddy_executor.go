@@ -396,8 +396,8 @@ func (e *CodeBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID,
 	req.Header.Set("X-Product", "SaaS")
 	req.Header.Set("X-IDE-Type", "CLI")
 	req.Header.Set("X-IDE-Name", "CLI")
-	req.Header.Set("X-IDE-Version", "2.63.2")
-	req.Header.Set("X-Product-Version", "2.63.2")
+	req.Header.Set("X-IDE-Version", "2.106.5")
+	req.Header.Set("X-Product-Version", "2.106.5")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 
 	convID := strings.ReplaceAll(uuid.New().String(), "-", "")
@@ -414,7 +414,7 @@ func (e *CodeBuddyExecutor) applyHeaders(req *http.Request, accessToken, userID,
 	req.Header.Set("X-Stainless-OS", "Linux")
 	req.Header.Set("X-Stainless-Arch", "x64")
 	req.Header.Set("X-Stainless-Runtime", "node")
-	req.Header.Set("X-Stainless-Runtime-Version", "v20.0.0")
+	req.Header.Set("X-Stainless-Runtime-Version", "v20.19.0")
 }
 
 type openAIChatStreamChoiceAccumulator struct {
